@@ -2,9 +2,19 @@ import React from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Platform } from 'react-native';
+import * as NavigationBar from 'expo-navigation-bar';
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
+  const insets = useSafeAreaInsets();
+
+  React.useEffect(() => {
+    if (Platform.OS === 'android') {
+      NavigationBar.setBackgroundColorAsync('#131313');
+    }
+  }, []);
 
   return (
     <Tabs
@@ -15,8 +25,8 @@ export default function TabLayout() {
         tabBarStyle: {
           backgroundColor: '#131313',
           borderTopColor: '#3b4b37',
-          paddingBottom: 5,
-          height: 60,
+          paddingBottom: insets.bottom + 5,
+          height: 60 + insets.bottom,
         },
       }}>
       <Tabs.Screen

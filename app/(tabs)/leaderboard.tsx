@@ -54,7 +54,8 @@ export default function PuntuacionScreen() {
       const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
       const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
       const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-      setTimeLeft(`${days}d ${hours}h ${minutes}m ${seconds}s`);
+      const pad = (num) => num.toString().padStart(2, '0');
+      setTimeLeft(`${days}d ${pad(hours)}h ${pad(minutes)}m ${pad(seconds)}s`);
       setIsLocked(false);
     }
   }, []);

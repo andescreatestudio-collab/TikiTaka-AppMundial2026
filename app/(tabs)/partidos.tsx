@@ -25,6 +25,14 @@ export default function PartidosScreen() {
   const [activeGroup, setActiveGroup] = useState(null);
   const [activeFilter, setActiveFilter] = useState('TODOS');
   const [userId, setUserId] = useState(null);
+  const [now, setNow] = useState(new Date());
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setNow(new Date());
+    }, 1000); // Actualizar cada segundo para el countdown
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     fetchData();
@@ -143,9 +151,21 @@ export default function PartidosScreen() {
 
   const isLocked = (kickoffUtc) => {
     const kickoffTime = new Date(kickoffUtc).getTime();
-    const now = new Date().getTime();
     // Bloquear 15 minutos (900,000 ms) antes del partido
-    return (kickoffTime - 900000) < now;
+    return (kickoffTime - 900000) <= now.getTime();
+  };
+
+  const getLockCountdown = (kickoffUtc) => {
+    const kickoffTime = new Date(kickoffUtc).getTime();
+    const lockTime = kickoffTime - 900000;
+    const diff = lockTime - now.getTime();
+    
+    if (diff > 0 && diff <= 300000) { // 5 minutos o menos
+      const mins = Math.floor(diff / 60000);
+      const secs = Math.floor((diff % 60000) / 1000);
+      return `⏱️ Cierra en ${mins}:${secs < 10 ? '0' : ''}${secs}`;
+    }
+    return null;
   };
 
   const filterMatches = (matchesList) => {
@@ -222,7 +242,7 @@ export default function PartidosScreen() {
               {dateMatches.map(match => {
                 const locked = isLocked(match.kickoff_utc);
                 const pred = predictions[match.id] || { home: '', away: '', isSaved: false };
-                const timeStr = new Date(match.kickoff_utc).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+                const timeStr = new Date(match.kickoff_utc).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
                 
                 return (
                   <View key={match.id} style={styles.matchCard}>
@@ -233,7 +253,13 @@ export default function PartidosScreen() {
                           <Ionicons name="lock-closed" size={12} color="#ff4b4b" />
                           <Text style={styles.lockedText}>BLOQUEADO</Text>
                         </View>
-                      ) : null}
+                      ) : (
+                        getLockCountdown(match.kickoff_utc) ? (
+                          <View style={styles.countdownBadge}>
+                            <Text style={styles.countdownText}>{getLockCountdown(match.kickoff_utc)}</Text>
+                          </View>
+                        ) : null
+                      )}
                     </View>
 
                     <View style={styles.teamsRow}>
@@ -341,4 +367,6 @@ const styles = StyleSheet.create({
   submitBtnSaved: { backgroundColor: '#1a2e1c', borderWidth: 1, borderColor: '#00FF41' },
   submitBtnText: { color: '#000', fontWeight: '800', fontSize: 12, letterSpacing: 1 },
   submitBtnTextSaved: { color: '#00FF41' },
+  countdownBadge: { backgroundColor: 'rgba(255, 75, 75, 0.1)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4, borderWidth: 1, borderColor: 'rgba(255, 75, 75, 0.3)' },
+  countdownText: { color: '#ff4b4b', fontSize: 10, fontWeight: '900' },
 });

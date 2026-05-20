@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   StyleSheet, Text, View, ScrollView, TouchableOpacity,
-  ActivityIndicator, RefreshControl, Modal, FlatList,
+  ActivityIndicator, RefreshControl, Modal, FlatList, Platform,
 } from 'react-native';
-import { supabase } from '../../src/lib/supabase';
+import { supabase, IS_DEV, switchEnvironment } from '../../src/lib/supabase';
+import { Switch } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -17,6 +18,10 @@ export default function DashboardScreen() {
   const [userRole, setUserRole] = useState(null); // 'admin' | 'participant'
   const [userId, setUserId] = useState(null);
   const [groupPickerVisible, setGroupPickerVisible] = useState(false);
+  const [devMenuVisible, setDevMenuVisible] = useState(false);
+  const [logoTaps, setLogoTaps] = useState(0);
+  const [lastTapTime, setLastTapTime] = useState(0);
+  const [isDevMode, setIsDevMode] = useState(IS_DEV);
   const router = useRouter();
 
   const fetchData = useCallback(async (currentGroupId = null) => {
@@ -110,6 +115,30 @@ export default function DashboardScreen() {
     await supabase.auth.signOut();
   };
 
+  const handleLogoTap = () => {
+    const now = Date.now();
+    if (now - lastTapTime < 500) {
+      const newTaps = logoTaps + 1;
+      if (newTaps >= 5) {
+        setDevMenuVisible(true);
+        setLogoTaps(0);
+      } else {
+        setLogoTaps(newTaps);
+      }
+    } else {
+      setLogoTaps(1);
+    }
+    setLastTapTime(now);
+  };
+
+  const toggleEnvironment = async (value) => {
+    setIsDevMode(value);
+    await switchEnvironment(value);
+    // Forzar recarga de datos con el nuevo cliente
+    setLoading(true);
+    fetchData();
+  };
+
   const isAdmin = userRole === 'admin';
 
   if (loading) {
@@ -127,7 +156,9 @@ export default function DashboardScreen() {
     >
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.logo}>TIKI-TAKA</Text>
+        <TouchableOpacity activeOpacity={1} onPress={handleLogoTap}>
+          <Text style={styles.logo}>TIKI-TAKA</Text>
+        </TouchableOpacity>
         <TouchableOpacity onPress={handleSignOut}>
           <Ionicons name="log-out-outline" size={24} color="#ff4b4b" />
         </TouchableOpacity>
@@ -289,6 +320,45 @@ export default function DashboardScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Modal: Developer Menu */}
+      <Modal visible={devMenuVisible} animationType="fade" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '50%' }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: '#ffb4ab' }]}>DEVELOPER MENU</Text>
+              <TouchableOpacity onPress={() => setDevMenuVisible(false)}>
+                <Ionicons name="close" size={24} color="#fff" />
+              </TouchableOpacity>
+            </View>
+            
+            <View style={styles.devSetting}>
+              <View>
+                <Text style={styles.devSettingLabel}>MODO DESARROLLO</Text>
+                <Text style={styles.devSettingSub}>{isDevMode ? 'Conectado a tiki-taka-dev' : 'Conectado a Producción'}</Text>
+              </View>
+              <Switch
+                value={isDevMode}
+                onValueChange={toggleEnvironment}
+                trackColor={{ false: '#393939', true: '#00FF41' }}
+                thumbColor="#fff"
+              />
+            </View>
+
+            <View style={styles.devInfo}>
+              <Text style={styles.devInfoTitle}>URL DE SUPABASE:</Text>
+              <Text style={styles.devInfoValue}>{supabase.supabaseUrl}</Text>
+            </View>
+
+            <TouchableOpacity 
+              style={styles.devCloseBtn} 
+              onPress={() => setDevMenuVisible(false)}
+            >
+              <Text style={styles.devCloseText}>CERRAR</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -364,4 +434,14 @@ const styles = StyleSheet.create({
   groupItemName: { color: '#fff', fontSize: 16, fontWeight: '700' },
   groupItemCode: { color: '#666', fontSize: 12, marginTop: 2 },
   groupItemRight: { flexDirection: 'row', alignItems: 'center' },
+
+  // Developer Menu
+  devSetting: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#1a1a1a', padding: 16, borderRadius: 8, marginBottom: 16 },
+  devSettingLabel: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  devSettingSub: { color: '#666', fontSize: 12, marginTop: 2 },
+  devInfo: { backgroundColor: '#1a1a1a', padding: 16, borderRadius: 8, marginBottom: 20 },
+  devInfoTitle: { color: '#666', fontSize: 10, fontWeight: '800', marginBottom: 4 },
+  devInfoValue: { color: '#b9ccb2', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
+  devCloseBtn: { backgroundColor: '#393939', padding: 14, borderRadius: 6, alignItems: 'center' },
+  devCloseText: { color: '#fff', fontWeight: '800', fontSize: 12 },
 });

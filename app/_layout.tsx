@@ -1,9 +1,10 @@
+import 'react-native-url-polyfill/auto';
 import { useEffect, useState } from 'react';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { Stack, useRouter, useSegments } from 'expo-router';
+import { Stack, useRouter, useSegments, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
-import { supabase } from '../src/lib/supabase';
+import { supabase, initSupabase } from '../src/lib/supabase';
 import { Session } from '@supabase/supabase-js';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -12,36 +13,53 @@ export default function RootLayout() {
   const colorScheme = useColorScheme();
   const [session, setSession] = useState<Session | null>(null);
   const [initialized, setInitialized] = useState(false);
+  const [envInitialized, setEnvInitialized] = useState(false);
   const segments = useSegments();
+  const pathname = usePathname();
   const router = useRouter();
 
   useEffect(() => {
+    initSupabase().then(() => {
+      setEnvInitialized(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!envInitialized) return;
+
     // Escuchar cambios en la sesión
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setInitialized(true);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log('AUTH STATE CHANGE:', event);
       setSession(session);
     });
 
     return () => subscription.unsubscribe();
-  }, []);
+  }, [envInitialized]);
 
   useEffect(() => {
-    if (!initialized) return;
+    console.log('NAVEGACIÓN - Sesión:', !!session, 'Iniciado:', initialized, 'Pathname:', pathname);
+    if (!initialized || !envInitialized) return;
 
-    const inAuthGroup = segments[0] === '(auth)';
+    const isAuthPage = pathname.includes('login') || pathname.includes('register');
 
-    if (!session && !inAuthGroup) {
-      // No hay sesión -> Forzar Login
+    if (!session && !isAuthPage) {
+      // No hay sesión y no estamos en login/register -> Forzar Login
       router.replace('/login');
-    } else if (session && inAuthGroup) {
-      // Hay sesión -> Ir a la App
+    } else if (session && isAuthPage) {
+      // Hay sesión y estamos en login/register -> Ir a la App
       router.replace('/(tabs)');
     }
-  }, [session, initialized, segments]);
+  }, [session, initialized, envInitialized, pathname]);
+
+  if (!envInitialized) {
+    return null;
+  }
+
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>

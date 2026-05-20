@@ -142,8 +142,8 @@ function KnockoutMatchCard({ match }: { match: Match }) {
   const homeFlag = getFlagUrl(match.home_team?.code);
   const awayFlag = getFlagUrl(match.away_team?.code);
   const hasScore = match.home_score !== null && match.away_score !== null;
-  const timeStr = new Date(match.kickoff_utc).toLocaleDateString('es-ES', {
-    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+  const timeStr = new Date(match.kickoff_utc).toLocaleString([], {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false
   });
 
   return (
