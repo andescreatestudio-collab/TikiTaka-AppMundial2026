@@ -8,6 +8,8 @@ import { Switch } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
+let hasRedirectedToChampionGlobal = false;
+
 export default function DashboardScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -22,6 +24,7 @@ export default function DashboardScreen() {
   const [logoTaps, setLogoTaps] = useState(0);
   const [lastTapTime, setLastTapTime] = useState(0);
   const [isDevMode, setIsDevMode] = useState(IS_DEV);
+  const [championChecked, setChampionChecked] = useState(false);
   const router = useRouter();
 
   const fetchData = useCallback(async (currentGroupId = null) => {
@@ -56,13 +59,29 @@ export default function DashboardScreen() {
       setUserRole(activeGroup.role);
 
       await fetchLeaderboard(activeGroup.id, user.id);
+
+      // ── Verificar si el torneo terminó (104 partidos finished) ──
+      if (!hasRedirectedToChampionGlobal && !championChecked) {
+        const { count } = await supabase
+          .from('matches')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'finished');
+
+        if (count !== null && count >= 104) {
+          hasRedirectedToChampionGlobal = true;
+          setChampionChecked(true);
+          router.push({ pathname: '/champion', params: { groupId: activeGroup.id } });
+          return;
+        }
+        setChampionChecked(true);
+      }
     } catch (error) {
       console.error('Error fetching dashboard:', error);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [selectedGroup]);
+  }, [selectedGroup, championChecked]);
 
   const fetchLeaderboard = async (groupId, uid) => {
     // Intentar tabla leaderboard (datos reales)
@@ -120,8 +139,13 @@ export default function DashboardScreen() {
     if (now - lastTapTime < 500) {
       const newTaps = logoTaps + 1;
       if (newTaps >= 5) {
-        setDevMenuVisible(true);
         setLogoTaps(0);
+        if (isAdmin) {
+          router.push('/simulation-panel');
+        } else {
+          // Para no-admins, ignorar silenciosamente
+          setLogoTaps(0);
+        }
       } else {
         setLogoTaps(newTaps);
       }

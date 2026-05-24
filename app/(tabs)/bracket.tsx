@@ -54,24 +54,30 @@ type TeamStat = {
 };
 
 // ─── Calcular Tabla de posiciones de un grupo ────────────────────────────────
-function calcGroupTable(matches: Match[]): TeamStat[] {
+function calcGroupTable(groupName: string, matches: Match[], groupTeams: Team[]): TeamStat[] {
   const stats: Record<string, TeamStat> = {};
 
-  const ensureTeam = (team: Team | null) => {
-    if (!team) return;
-    if (!stats[team.id]) {
-      stats[team.id] = { team, pj: 0, g: 0, e: 0, p: 0, gf: 0, gc: 0, dg: 0, pts: 0 };
-    }
-  };
+  // Inicializar exactamente los 4 equipos del grupo
+  groupTeams.forEach(team => {
+    stats[team.id] = {
+      team,
+      pj: 0, g: 0, e: 0, p: 0, gf: 0, gc: 0, dg: 0, pts: 0
+    };
+  });
 
   matches.forEach(m => {
-    ensureTeam(m.home_team);
-    ensureTeam(m.away_team);
+    // Filtro estricto: solo partidos con round = 'group' Y group_name del grupo correspondiente
+    if (m.round !== 'group' || m.group_name !== groupName) return;
 
-    if (m.home_score === null || m.away_score === null || !m.home_team || !m.away_team) return;
+    if (!m.home_team || !m.away_team) return;
 
+    // Solo procesar si ambos equipos pertenecen a este grupo
     const h = stats[m.home_team.id];
     const a = stats[m.away_team.id];
+    if (!h || !a) return;
+
+    if (m.home_score === null || m.away_score === null) return;
+
     const hs = m.home_score, as_ = m.away_score;
 
     h.pj++; a.pj++;
@@ -114,8 +120,8 @@ function GroupRow({ stat, position }: { stat: TeamStat; position: number }) {
 }
 
 // ─── Componente: Tarjeta de grupo ─────────────────────────────────────────────
-function GroupCard({ groupName, matches }: { groupName: string; matches: Match[] }) {
-  const table = calcGroupTable(matches);
+function GroupCard({ groupName, matches, groupTeams }: { groupName: string; matches: Match[]; groupTeams: Team[] }) {
+  const table = calcGroupTable(groupName, matches, groupTeams);
   return (
     <View style={styles.groupCard}>
       <Text style={styles.groupTitle}>GRUPO {groupName}</Text>
@@ -185,25 +191,41 @@ export default function BracketScreen() {
   const [view, setView] = useState<'groups' | 'knockout'>('groups');
   const [loading, setLoading] = useState(true);
   const [matches, setMatches] = useState<Match[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
 
   useEffect(() => {
     fetchMatches();
   }, []);
 
-  const fetchMatches = async () => {
-    try {
-      setLoading(true);
-      const { data, error } = await supabase
-        .from('matches')
-        .select(`
-          id, match_number, round, group_name, kickoff_utc, home_score, away_score,
-          home_team:teams!home_team_id(id, name, code, flag_emoji),
-          away_team:teams!away_team_id(id, name, code, flag_emoji)
-        `)
-        .order('match_number', { ascending: true });
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchMatches(true);
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
-      if (error) throw error;
-      setMatches((data as Match[]) || []);
+  const fetchMatches = async (silent = false) => {
+    try {
+      if (!silent) setLoading(true);
+      const [matchesRes, teamsRes] = await Promise.all([
+        supabase
+          .from('matches')
+          .select(`
+            id, match_number, round, group_name, kickoff_utc, home_score, away_score,
+            home_team:teams!home_team_id(id, name, code, flag_emoji),
+            away_team:teams!away_team_id(id, name, code, flag_emoji)
+          `)
+          .order('match_number', { ascending: true }),
+        supabase
+          .from('teams')
+          .select('id, name, code, flag_emoji, group_name')
+      ]);
+
+      if (matchesRes.error) throw matchesRes.error;
+      if (teamsRes.error) throw teamsRes.error;
+
+      setMatches((matchesRes.data as Match[]) || []);
+      setTeams((teamsRes.data as Team[]) || []);
     } catch (e) {
       console.error('Error cargando bracket:', e);
     } finally {
@@ -260,9 +282,13 @@ export default function BracketScreen() {
       {/* Contenido */}
       {view === 'groups' ? (
         <ScrollView contentContainerStyle={styles.groupsGrid}>
-          {['A','B','C','D','E','F','G','H','I','J','K','L'].map(g => (
-            byGroup[g] ? <GroupCard key={g} groupName={g} matches={byGroup[g]} /> : null
-          ))}
+          {['A','B','C','D','E','F','G','H','I','J','K','L'].map(g => {
+            const groupMatchesList = byGroup[g] || [];
+            const groupTeamsList = teams.filter(t => t.group_name === g);
+            return (
+              <GroupCard key={g} groupName={g} matches={groupMatchesList} groupTeams={groupTeamsList} />
+            );
+          })}
         </ScrollView>
       ) : (
         <ScrollView contentContainerStyle={styles.koScroll}>

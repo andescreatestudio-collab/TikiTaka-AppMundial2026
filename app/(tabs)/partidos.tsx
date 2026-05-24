@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Image } from 'react-native';
+import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Image, Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../src/lib/supabase';
 
@@ -16,6 +16,52 @@ const TEAM_TO_ISO2 = {
   AUT: 'at', SCO: 'gb-sct', ENG: 'gb-eng', SWE: 'se',
   NOR: 'no', TUR: 'tr', IRQ: 'iq', UZB: 'uz', JOR: 'jo',
   NZL: 'nz', HAI: 'ht', PAN: 'pa', CUW: 'cw'
+};
+
+const formatMatchDate = (kickoffUtc) => {
+  const d = new Date(kickoffUtc);
+  const days = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+  const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+  
+  const dayName = days[d.getDay()];
+  const dayNum = d.getDate();
+  const monthName = months[d.getMonth()];
+  const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  
+  const now = new Date();
+  if (d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()) {
+    return `${dayName} ${dayNum} · ${timeStr}`;
+  } else {
+    return `${dayName} ${dayNum} ${monthName} · ${timeStr}`;
+  }
+};
+
+const BlinkingLiveBadge = () => {
+  const fadeAnim = React.useRef(new Animated.Value(1)).current;
+
+  React.useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(fadeAnim, {
+          toValue: 0.3,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
+  }, [fadeAnim]);
+
+  return (
+    <Animated.View style={[styles.liveBadge, { opacity: fadeAnim }]}>
+      <Ionicons name="play" size={10} color="#000" />
+      <Text style={styles.liveText}>EN VIVO</Text>
+    </Animated.View>
+  );
 };
 
 export default function PartidosScreen() {
@@ -38,9 +84,16 @@ export default function PartidosScreen() {
     fetchData();
   }, []);
 
-  const fetchData = async () => {
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchData(true); // silent refresh cada 30 segundos
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const fetchData = async (silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
       setUserId(user.id);
@@ -62,7 +115,7 @@ export default function PartidosScreen() {
       const { data: matchesData, error: matchesError } = await supabase
         .from('matches')
         .select(`
-          id, match_number, round, group_name, kickoff_utc, status, home_score, away_score,
+          id, match_number, round, group_name, kickoff_utc, status, home_score, away_score, home_penalties, away_penalties,
           home_team:teams!home_team_id(id, name, code, flag_emoji),
           away_team:teams!away_team_id(id, name, code, flag_emoji)
         `)
@@ -168,6 +221,47 @@ export default function PartidosScreen() {
     return null;
   };
 
+  const renderStatusBadge = (match) => {
+    const kickoffTime = new Date(match.kickoff_utc).getTime();
+    const nowTime = now.getTime();
+
+    if (match.status === 'finished') {
+      return (
+        <View style={styles.ftBadge}>
+          <Ionicons name="checkmark-circle" size={12} color="#00FF41" />
+          <Text style={styles.ftText}>FT</Text>
+        </View>
+      );
+    }
+
+    // Live: between kickoff and kickoff + 110 minutes
+    if (nowTime >= kickoffTime && nowTime <= kickoffTime + 110 * 60 * 1000) {
+      return <BlinkingLiveBadge />;
+    }
+
+    // Locked: between kickoff - 15 minutes and kickoff
+    if (nowTime >= kickoffTime - 15 * 60 * 1000 && nowTime < kickoffTime) {
+      return (
+        <View style={styles.lockedBadge}>
+          <Ionicons name="lock-closed" size={12} color="#ff4b4b" />
+          <Text style={styles.lockedText}>BLOQUEADO</Text>
+        </View>
+      );
+    }
+
+    // Countdown: standard countdown if within the 5-minute window before locking
+    const countdown = getLockCountdown(match.kickoff_utc);
+    if (countdown) {
+      return (
+        <View style={styles.countdownBadge}>
+          <Text style={styles.countdownText}>{countdown}</Text>
+        </View>
+      );
+    }
+
+    return null;
+  };
+
   const filterMatches = (matchesList) => {
     const today = new Date().toDateString();
     return matchesList.filter(m => {
@@ -242,25 +336,22 @@ export default function PartidosScreen() {
               {dateMatches.map(match => {
                 const locked = isLocked(match.kickoff_utc);
                 const pred = predictions[match.id] || { home: '', away: '', isSaved: false };
-                const timeStr = new Date(match.kickoff_utc).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+                const formattedDateStr = formatMatchDate(match.kickoff_utc);
                 
                 return (
                   <View key={match.id} style={styles.matchCard}>
                     <View style={styles.matchHeader}>
-                      <Text style={styles.matchMeta}>{match.round === 'group' ? `Grupo ${match.group_name}` : match.round} • {timeStr}</Text>
-                      {locked ? (
-                        <View style={styles.lockedBadge}>
-                          <Ionicons name="lock-closed" size={12} color="#ff4b4b" />
-                          <Text style={styles.lockedText}>BLOQUEADO</Text>
-                        </View>
-                      ) : (
-                        getLockCountdown(match.kickoff_utc) ? (
-                          <View style={styles.countdownBadge}>
-                            <Text style={styles.countdownText}>{getLockCountdown(match.kickoff_utc)}</Text>
-                          </View>
-                        ) : null
-                      )}
+                      <Text style={styles.matchMeta}>{match.round === 'group' ? `Grupo ${match.group_name}` : match.round} • {formattedDateStr}</Text>
+                      {renderStatusBadge(match)}
                     </View>
+
+                    {match.status === 'finished' && (
+                      <View style={styles.finalScoreRow}>
+                        <Text style={styles.finalScoreText}>
+                          {match.home_team?.code} {match.home_score} {match.home_penalties !== null ? `(${match.home_penalties}) ` : ''}vs {match.away_penalties !== null ? `(${match.away_penalties}) ` : ''}{match.away_score} {match.away_team?.code}
+                        </Text>
+                      </View>
+                    )}
 
                     <View style={styles.teamsRow}>
                       <View style={styles.team}>
@@ -352,8 +443,54 @@ const styles = StyleSheet.create({
   matchCard: { backgroundColor: '#201f1f', borderRadius: 8, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: '#3b4b37' },
   matchHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16 },
   matchMeta: { color: '#b9ccb2', fontSize: 12, fontWeight: '700' },
-  lockedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255, 75, 75, 0.1)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  lockedText: { color: '#ff4b4b', fontSize: 10, fontWeight: '800' },
+  finalScoreRow: { backgroundColor: '#131313', paddingVertical: 8, borderRadius: 6, marginBottom: 16, alignItems: 'center', borderWidth: 1, borderColor: '#00FF41' },
+  finalScoreText: { color: '#00FF41', fontSize: 16, fontWeight: '900', letterSpacing: 1 },
+  lockedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(255, 75, 75, 0.1)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 75, 75, 0.3)',
+  },
+  lockedText: {
+    color: '#ff4b4b',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  ftBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(0, 255, 65, 0.1)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 255, 65, 0.3)',
+  },
+  ftText: {
+    color: '#00FF41',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  liveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#FFB800',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  liveText: {
+    color: '#000',
+    fontSize: 10,
+    fontWeight: '800',
+  },
   teamsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   team: { alignItems: 'center', flex: 1 },
   flag: { fontSize: 32, marginBottom: 4 },

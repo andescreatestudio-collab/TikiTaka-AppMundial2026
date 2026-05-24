@@ -74,7 +74,22 @@ export default function RootLayout() {
           }} 
         />
         <Stack.Screen name="groups/create" options={{ title: 'Crear Grupo' }} />
-        <Stack.Screen name="groups/join" options={{ title: 'Unirse al Grupo' }} />
+        <Stack.Screen name="groups/join"   options={{ title: 'Unirse al Grupo' }} />
+        <Stack.Screen
+          name="simulation-panel"
+          options={{
+            presentation: 'modal',
+            headerShown: false,
+          }}
+        />
+        <Stack.Screen
+          name="champion"
+          options={{
+            presentation: 'modal',
+            headerShown: false,
+            gestureEnabled: false,
+          }}
+        />
       </Stack>
       <StatusBar style="light" />
     </ThemeProvider>
