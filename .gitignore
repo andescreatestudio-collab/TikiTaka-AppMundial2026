@@ -30,9 +30,15 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
+# local env files — nunca subir credenciales al repositorio
 .env
-.env*.local
+.env.*
+.env.local
+.env.development
+.env.production
+.env.dev
+.env.staging
+.env.test
 
 # typescript
 *.tsbuildinfo
