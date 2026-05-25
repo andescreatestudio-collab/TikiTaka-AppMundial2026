@@ -4,7 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
 const supabaseUrl = 'https://ruwnxeyrfvuyzddmygkd.supabase.co';
-const supabaseAnonKey = 'sb_publishable_E3kRj91eyhd4mxtnQKAeCQ_GHqg4kRw';
+const supabaseAnonKey = 'sb_publishable_ldMqVLg5wWwJXglf3G-8mw_jwYqZEmS';
 
 const storage = Platform.OS === 'web' ? {
   getItem: (key) => typeof window !== 'undefined' ? window.localStorage.getItem(key) : null,
