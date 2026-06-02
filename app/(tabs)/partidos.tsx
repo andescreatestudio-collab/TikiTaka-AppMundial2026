@@ -5,7 +5,7 @@ import { supabase } from '../../src/lib/supabase';
 
 const FILTERS = ['TODOS', 'HOY', 'MIS PREDICCIONES', 'FASE DE GRUPOS', 'ELIMINATORIAS'];
 
-const TEAM_TO_ISO2 = {
+const TEAM_TO_ISO2: Record<string, string> = {
   ARG: 'ar', MEX: 'mx', USA: 'us', CAN: 'ca', BRA: 'br',
   ESP: 'es', FRA: 'fr', GER: 'de', POR: 'pt', URU: 'uy',
   COL: 'co', NED: 'nl', BEL: 'be', CRO: 'hr', JPN: 'jp',
@@ -18,7 +18,7 @@ const TEAM_TO_ISO2 = {
   NZL: 'nz', HAI: 'ht', PAN: 'pa', CUW: 'cw'
 };
 
-const formatMatchDate = (kickoffUtc) => {
+const formatMatchDate = (kickoffUtc: string) => {
   const d = new Date(kickoffUtc);
   const days = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
   const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
@@ -64,13 +64,21 @@ const BlinkingLiveBadge = () => {
   );
 };
 
+interface PredictionState {
+  [matchId: string]: {
+    home: string;
+    away: string;
+    isSaved: boolean;
+  };
+}
+
 export default function PartidosScreen() {
   const [loading, setLoading] = useState(true);
-  const [matches, setMatches] = useState([]);
-  const [predictions, setPredictions] = useState({}); // { matchId: { home, away, isSaved } }
-  const [activeGroup, setActiveGroup] = useState(null);
+  const [matches, setMatches] = useState<any[]>([]);
+  const [predictions, setPredictions] = useState<PredictionState>({}); // { matchId: { home, away, isSaved } }
+  const [activeGroup, setActiveGroup] = useState<{ id: string; name: string } | null>(null);
   const [activeFilter, setActiveFilter] = useState('TODOS');
-  const [userId, setUserId] = useState(null);
+  const [userId, setUserId] = useState<string | null>(null);
   const [now, setNow] = useState(new Date());
 
   useEffect(() => {
@@ -108,7 +116,7 @@ export default function PartidosScreen() {
       let groupId = null;
       if (groups && groups.length > 0) {
         groupId = groups[0].group_id;
-        setActiveGroup({ id: groupId, name: groups[0].groups?.name });
+        setActiveGroup({ id: groupId, name: (groups[0] as any).groups?.name });
       }
 
       // 2. Obtener Partidos
@@ -124,7 +132,7 @@ export default function PartidosScreen() {
       if (matchesError) throw matchesError;
 
       // 3. Obtener Predicciones si hay grupo activo
-      let predsMap = {};
+      let predsMap: PredictionState = {};
       if (groupId) {
         const { data: predsData, error: predsError } = await supabase
           .from('predictions')
@@ -153,7 +161,7 @@ export default function PartidosScreen() {
     }
   };
 
-  const handlePredictionChange = (matchId, team, value) => {
+  const handlePredictionChange = (matchId: string, team: 'home' | 'away', value: string) => {
     // Solo permitir números
     const numericValue = value.replace(/[^0-9]/g, '');
     setPredictions(prev => ({
@@ -166,7 +174,7 @@ export default function PartidosScreen() {
     }));
   };
 
-  const savePrediction = async (matchId) => {
+  const savePrediction = async (matchId: string) => {
     if (!activeGroup) {
       Alert.alert('Error', 'Debes unirte a un grupo primero para hacer predicciones.');
       return;
@@ -202,13 +210,13 @@ export default function PartidosScreen() {
     }
   };
 
-  const isLocked = (kickoffUtc) => {
+  const isLocked = (kickoffUtc: string) => {
     const kickoffTime = new Date(kickoffUtc).getTime();
     // Bloquear 15 minutos (900,000 ms) antes del partido
     return (kickoffTime - 900000) <= now.getTime();
   };
 
-  const getLockCountdown = (kickoffUtc) => {
+  const getLockCountdown = (kickoffUtc: string) => {
     const kickoffTime = new Date(kickoffUtc).getTime();
     const lockTime = kickoffTime - 900000;
     const diff = lockTime - now.getTime();
@@ -221,7 +229,7 @@ export default function PartidosScreen() {
     return null;
   };
 
-  const renderStatusBadge = (match) => {
+  const renderStatusBadge = (match: any) => {
     const kickoffTime = new Date(match.kickoff_utc).getTime();
     const nowTime = now.getTime();
 
@@ -262,7 +270,7 @@ export default function PartidosScreen() {
     return null;
   };
 
-  const filterMatches = (matchesList) => {
+  const filterMatches = (matchesList: any[]) => {
     const today = new Date().toDateString();
     return matchesList.filter(m => {
       if (activeFilter === 'TODOS') return true;
@@ -274,20 +282,21 @@ export default function PartidosScreen() {
     });
   };
 
-  const getFlagUrl = (code) => {
+  const getFlagUrl = (code: string | undefined): string | undefined => {
+    if (!code) return undefined;
     const iso2 = TEAM_TO_ISO2[code];
-    if (!iso2) return null;
+    if (!iso2) return undefined;
     return `https://flagcdn.com/w80/${iso2}.png`;
   };
 
-  const groupedMatches = filterMatches(matches).reduce((acc, match) => {
+  const groupedMatches = filterMatches(matches).reduce((acc: Record<string, any[]>, match: any) => {
     const dateStr = new Date(match.kickoff_utc).toLocaleDateString('es-ES', { 
       weekday: 'long', day: 'numeric', month: 'long' 
     }).toUpperCase();
     if (!acc[dateStr]) acc[dateStr] = [];
     acc[dateStr].push(match);
     return acc;
-  }, {});
+  }, {} as Record<string, any[]>);
 
   if (loading) {
     return (

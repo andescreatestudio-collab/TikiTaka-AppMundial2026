@@ -1,33 +1,36 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   StyleSheet, Text, View, ScrollView, TouchableOpacity,
-  ActivityIndicator, RefreshControl, Modal, FlatList, Platform,
+  ActivityIndicator, RefreshControl, Modal, FlatList, Platform, Pressable,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase, IS_DEV, switchEnvironment } from '../../src/lib/supabase';
 import { Switch } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
-let hasRedirectedToChampionGlobal = false;
+// Flag en módulo para evitar loop de redirección infinita a /champion en la misma sesión
+let hasAutoRedirectedToChampion = false;
 
 export default function DashboardScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [userGroups, setUserGroups] = useState([]);
-  const [selectedGroup, setSelectedGroup] = useState(null);
-  const [leaderboard, setLeaderboard] = useState([]);
-  const [myPoints, setMyPoints] = useState(null);
-  const [userRole, setUserRole] = useState(null); // 'admin' | 'participant'
-  const [userId, setUserId] = useState(null);
+  const [userGroups, setUserGroups] = useState<any[]>([]);
+  const [selectedGroup, setSelectedGroup] = useState<any | null>(null);
+  const [leaderboard, setLeaderboard] = useState<any[]>([]);
+  const [myPoints, setMyPoints] = useState<number | null>(null);
+  const [userRole, setUserRole] = useState<string | null>(null); // 'admin' | 'participant'
+  const [userId, setUserId] = useState<string | null>(null);
   const [groupPickerVisible, setGroupPickerVisible] = useState(false);
   const [devMenuVisible, setDevMenuVisible] = useState(false);
-  const [logoTaps, setLogoTaps] = useState(0);
-  const [lastTapTime, setLastTapTime] = useState(0);
+  // Usamos refs para el contador de logo-taps (evita stale closures en web)
+  const logoTapsRef  = useRef(0);
+  const lastTapRef   = useRef(0);
   const [isDevMode, setIsDevMode] = useState(IS_DEV);
-  const [championChecked, setChampionChecked] = useState(false);
+
   const router = useRouter();
 
-  const fetchData = useCallback(async (currentGroupId = null) => {
+  const fetchData = useCallback(async (currentGroupId: string | null = null) => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
@@ -42,7 +45,7 @@ export default function DashboardScreen() {
 
       if (groupsError) throw groupsError;
 
-      const formattedGroups = groups.map(g => ({
+      const formattedGroups: any[] = (groups || []).map(g => ({
         ...g.groups,
         role: g.role,
       }));
@@ -50,30 +53,51 @@ export default function DashboardScreen() {
 
       if (formattedGroups.length === 0) return;
 
-      // 2. Seleccionar el grupo activo (el que se pasó o el primero)
-      const activeGroup = currentGroupId
-        ? formattedGroups.find(g => g.id === currentGroupId) ?? formattedGroups[0]
+      // Intentar leer de AsyncStorage si no hay currentGroupId y selectedGroup es null
+      let targetGroupId = currentGroupId;
+      if (!targetGroupId && !selectedGroup) {
+        try {
+          const persisted = await AsyncStorage.getItem('@active_group_id');
+          if (persisted) {
+            targetGroupId = persisted;
+          }
+        } catch (e) {
+          console.error('Error reading active group ID from AsyncStorage:', e);
+        }
+      }
+
+      // 2. Seleccionar el grupo activo (el que se pasó/leyó o el primero)
+      const activeGroup = targetGroupId
+        ? formattedGroups.find(g => g.id === targetGroupId) ?? formattedGroups[0]
         : selectedGroup ?? formattedGroups[0];
 
       setSelectedGroup(activeGroup);
       setUserRole(activeGroup.role);
 
+      // Guardar el grupo seleccionado para que persista
+      try {
+        await AsyncStorage.setItem('@active_group_id', activeGroup.id);
+      } catch (e) {
+        console.error('Error writing active group ID to AsyncStorage:', e);
+      }
+
       await fetchLeaderboard(activeGroup.id, user.id);
 
-      // ── Verificar si el torneo terminó (104 partidos finished) ──
-      if (!hasRedirectedToChampionGlobal && !championChecked) {
-        const { count } = await supabase
-          .from('matches')
-          .select('id', { count: 'exact', head: true })
-          .eq('status', 'finished');
+      // ── Verificar si el torneo terminó consultando el partido final en Supabase ──
+      // Sin flags: siempre consultamos para reflejar el estado real (incluso post-reset)
+      const { data: finalMatch, error: finalError } = await supabase
+        .from('matches')
+        .select('status')
+        .eq('round', 'final')
+        .limit(1)
+        .maybeSingle();
 
-        if (count !== null && count >= 104) {
-          hasRedirectedToChampionGlobal = true;
-          setChampionChecked(true);
+      if (!finalError && finalMatch?.status === 'finished') {
+        if (!hasAutoRedirectedToChampion) {
+          hasAutoRedirectedToChampion = true;
           router.push({ pathname: '/champion', params: { groupId: activeGroup.id } });
           return;
         }
-        setChampionChecked(true);
       }
     } catch (error) {
       console.error('Error fetching dashboard:', error);
@@ -81,36 +105,52 @@ export default function DashboardScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [selectedGroup, championChecked]);
+  }, [selectedGroup]);
 
-  const fetchLeaderboard = async (groupId, uid) => {
-    // Intentar tabla leaderboard (datos reales)
-    const { data: lbData } = await supabase
-      .from('leaderboard')
-      .select('user_id, total_points, exact_scores, correct_winners, users(username)')
-      .eq('group_id', groupId)
-      .order('total_points', { ascending: false });
-
-    if (lbData && lbData.length > 0) {
-      setLeaderboard(lbData);
-      const mine = lbData.find(r => r.user_id === uid);
-      setMyPoints(mine?.total_points ?? 0);
-    } else {
-      // Fallback: mostrar miembros con 0 pts
-      const { data: members } = await supabase
+  const fetchLeaderboard = async (groupId: string, uid: string) => {
+    try {
+      // 1. Obtener todos los miembros del grupo y su nombre de usuario
+      const { data: members, error: membersError } = await supabase
         .from('group_members')
-        .select('user_id, role, users(username)')
+        .select('user_id, users(username)')
         .eq('group_id', groupId);
 
-      const rows = (members || []).map(m => ({
-        user_id: m.user_id,
-        total_points: 0,
-        exact_scores: 0,
-        correct_winners: 0,
-        users: m.users,
-      }));
+      if (membersError) throw membersError;
+
+      // 2. Obtener los puntajes reales de leaderboard
+      const { data: lbData } = await supabase
+        .from('leaderboard')
+        .select('user_id, total_points, exact_scores, correct_winners')
+        .eq('group_id', groupId);
+
+      // Crear mapa indexado por user_id para un acceso rápido
+      const lbMap = new Map();
+      if (lbData) {
+        lbData.forEach(row => {
+          lbMap.set(row.user_id, row);
+        });
+      }
+
+      // 3. Mezclar los datos de miembros con los de leaderboard
+      const rows = (members || []).map(m => {
+        const scoreInfo = lbMap.get(m.user_id);
+        return {
+          user_id: m.user_id,
+          total_points: scoreInfo?.total_points ?? 0,
+          exact_scores: scoreInfo?.exact_scores ?? 0,
+          correct_winners: scoreInfo?.correct_winners ?? 0,
+          users: m.users,
+        };
+      });
+
+      // 4. Ordenar por puntaje descendente
+      rows.sort((a, b) => b.total_points - a.total_points);
+
       setLeaderboard(rows);
-      setMyPoints(0);
+      const mine = rows.find(r => r.user_id === uid);
+      setMyPoints(mine?.total_points ?? 0);
+    } catch (error) {
+      console.error('Error fetching leaderboard:', error);
     }
   };
 
@@ -123,11 +163,16 @@ export default function DashboardScreen() {
     fetchData(selectedGroup?.id);
   };
 
-  const switchGroup = (group) => {
+  const switchGroup = async (group: any) => {
     setGroupPickerVisible(false);
     setSelectedGroup(group);
     setUserRole(group.role);
-    fetchLeaderboard(group.id, userId);
+    try {
+      await AsyncStorage.setItem('@active_group_id', group.id);
+    } catch (e) {
+      console.error('Error saving group ID on switch:', e);
+    }
+    fetchLeaderboard(group.id, userId!);
   };
 
   const handleSignOut = async () => {
@@ -136,26 +181,29 @@ export default function DashboardScreen() {
 
   const handleLogoTap = () => {
     const now = Date.now();
-    if (now - lastTapTime < 500) {
-      const newTaps = logoTaps + 1;
-      if (newTaps >= 5) {
-        setLogoTaps(0);
-        if (isAdmin) {
-          router.push('/simulation-panel');
-        } else {
-          // Para no-admins, ignorar silenciosamente
-          setLogoTaps(0);
-        }
-      } else {
-        setLogoTaps(newTaps);
-      }
+    const elapsed = now - lastTapRef.current;
+    lastTapRef.current = now;
+
+    if (elapsed < 800) {
+      // Tap rápido consecutivo
+      logoTapsRef.current += 1;
     } else {
-      setLogoTaps(1);
+      // Demasiado tiempo entre taps — reiniciar a 1
+      logoTapsRef.current = 1;
     }
-    setLastTapTime(now);
+
+    console.log(`[Logo] tap #${logoTapsRef.current} (elapsed ${elapsed}ms) isAdmin=${isAdmin}`);
+
+    if (logoTapsRef.current >= 5) {
+      logoTapsRef.current = 0;
+      if (isAdmin) {
+        console.log('[Logo] Abriendo simulation-panel...');
+        router.push('/simulation-panel');
+      }
+    }
   };
 
-  const toggleEnvironment = async (value) => {
+  const toggleEnvironment = async (value: boolean) => {
     setIsDevMode(value);
     await switchEnvironment(value);
     // Forzar recarga de datos con el nuevo cliente
@@ -180,11 +228,17 @@ export default function DashboardScreen() {
     >
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity activeOpacity={1} onPress={handleLogoTap}>
+        {/* Pressable funciona correctamente en web y nativo para taps rápidos */}
+        <Pressable
+          onPress={handleLogoTap}
+          // onClick es el fallback explícito para web (Expo web usa onClick internamente)
+          {...(Platform.OS === 'web' ? { onClick: handleLogoTap } : {})}
+          style={({ pressed }) => ({ opacity: pressed ? 0.8 : 1 })}
+        >
           <Text style={styles.logo}>TIKI-TAKA</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={handleSignOut}>
-          <Ionicons name="log-out-outline" size={24} color="#ff4b4b" />
+        </Pressable>
+        <TouchableOpacity onPress={() => router.push('/profile' as any)}>
+          <Ionicons name="person-circle-outline" size={28} color="#00FF41" />
         </TouchableOpacity>
       </View>
 
@@ -231,13 +285,25 @@ export default function DashboardScreen() {
             <Text style={styles.inviteCode}>{selectedGroup?.invite_code}</Text>
           </View>
 
-          {/* Mi posición */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>TU POSICIÓN</Text>
-            <Text style={styles.points}>{myPoints ?? 0} pts</Text>
-            <Text style={styles.rank}>
-              {myPoints === 0 ? 'Haz tus predicciones en la tab Partidos' : `#${leaderboard.findIndex(r => r.user_id === userId) + 1} en el grupo`}
-            </Text>
+          {/* Estadísticas rápidas: Puntos y Posición */}
+          <View style={styles.cardRow}>
+            <View style={styles.halfCard}>
+              <Text style={styles.cardTitle}>TUS PUNTOS</Text>
+              <Text style={styles.cardPoints}>{myPoints ?? 0} <Text style={styles.pointsSub}>pts</Text></Text>
+              <Text style={styles.rank}>Acumulados</Text>
+            </View>
+
+            <View style={[styles.halfCard, { borderLeftColor: '#FFD700' }]}>
+              <Text style={styles.cardTitle}>TU POSICIÓN</Text>
+              <Text style={styles.cardPoints}>
+                {leaderboard.findIndex(r => r.user_id === userId) !== -1 
+                  ? `#${leaderboard.findIndex(r => r.user_id === userId) + 1}`
+                  : '-'}
+              </Text>
+              <Text style={[styles.rank, { color: '#FFD700' }]}>
+                {leaderboard.length > 0 ? `de ${leaderboard.length} miembros` : 'Sin registrar'}
+              </Text>
+            </View>
           </View>
 
           {/* Tabla de posiciones */}
@@ -371,7 +437,7 @@ export default function DashboardScreen() {
 
             <View style={styles.devInfo}>
               <Text style={styles.devInfoTitle}>URL DE SUPABASE:</Text>
-              <Text style={styles.devInfoValue}>{supabase.supabaseUrl}</Text>
+              <Text style={styles.devInfoValue}>{(supabase as any).supabaseUrl}</Text>
             </View>
 
             <TouchableOpacity 
@@ -418,8 +484,12 @@ const styles = StyleSheet.create({
 
   // Mi posición
   card: { backgroundColor: '#201f1f', marginHorizontal: 20, padding: 24, borderRadius: 8, borderLeftWidth: 4, borderLeftColor: '#00FF41', marginBottom: 24 },
+  cardRow: { flexDirection: 'row', gap: 12, marginHorizontal: 20, marginBottom: 24 },
+  halfCard: { flex: 1, backgroundColor: '#201f1f', padding: 20, borderRadius: 8, borderLeftWidth: 4, borderLeftColor: '#00FF41' },
   cardTitle: { color: '#b9ccb2', fontSize: 12, fontWeight: '700', marginBottom: 8 },
   points: { color: '#fff', fontSize: 48, fontWeight: '900' },
+  cardPoints: { color: '#fff', fontSize: 32, fontWeight: '900' },
+  pointsSub: { fontSize: 16, fontWeight: '700', color: '#b9ccb2' },
   rank: { color: '#00FF41', fontSize: 13, marginTop: 8 },
 
   // Secciones

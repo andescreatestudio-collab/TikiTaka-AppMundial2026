@@ -17,10 +17,12 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     storage,
     autoRefreshToken: true,
     persistSession: true,
-    detectSessionInUrl: false,
+    // En web debe ser true para que Supabase lea el #access_token del
+    // correo de recuperación. En nativo se maneja por deep link.
+    detectSessionInUrl: Platform.OS === 'web',
   },
 });
 
 export const initSupabase = async () => {};
-export const switchEnvironment = async () => {};
+export const switchEnvironment = async (isDev) => {};
 export let IS_DEV = false;

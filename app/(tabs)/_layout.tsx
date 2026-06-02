@@ -65,6 +65,15 @@ export default function TabLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="puntuacion"
+        options={{
+          title: 'Puntuación',
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? 'stats-chart' : 'stats-chart-outline'} size={24} color={color} />
+          ),
+        }}
+      />
       {/* Ocultamos el explore por defecto del template */}
       <Tabs.Screen
         name="explore"

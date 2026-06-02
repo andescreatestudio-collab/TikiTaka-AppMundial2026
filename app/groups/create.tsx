@@ -39,7 +39,7 @@ export default function CreateGroupScreen() {
         .upsert({ 
           id: user.id, 
           email: user.email, 
-          username: user.user_metadata?.username || user.email.split('@')[0] 
+          username: user.user_metadata?.username || (user.email ? user.email.split('@')[0] : 'usuario') 
         }, { onConflict: 'id' });
 
       if (userUpsertError) console.warn('User upsert warning:', userUpsertError.message);

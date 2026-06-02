@@ -35,7 +35,7 @@ const getFlagUrl = (code: string | undefined) => {
   return iso2 ? `https://flagcdn.com/w80/${iso2}.png` : null;
 };
 
-type Team = { id: string; name: string; code: string; flag_emoji: string };
+type Team = { id: string; name: string; code: string; flag_emoji: string; group_name?: string | null };
 type Match = {
   id: string;
   match_number: number;
@@ -224,7 +224,16 @@ export default function BracketScreen() {
       if (matchesRes.error) throw matchesRes.error;
       if (teamsRes.error) throw teamsRes.error;
 
-      setMatches((matchesRes.data as Match[]) || []);
+      if (matchesRes.data) {
+        const formatted: Match[] = (matchesRes.data as any[]).map((m: any) => ({
+          ...m,
+          home_team: Array.isArray(m.home_team) ? (m.home_team[0] ?? null) : (m.home_team ?? null),
+          away_team: Array.isArray(m.away_team) ? (m.away_team[0] ?? null) : (m.away_team ?? null),
+        }));
+        setMatches(formatted);
+      } else {
+        setMatches([]);
+      }
       setTeams((teamsRes.data as Team[]) || []);
     } catch (e) {
       console.error('Error cargando bracket:', e);

@@ -3,159 +3,167 @@ import {
   StyleSheet,
   Text,
   View,
-  ScrollView,
+  FlatList,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
-  Modal,
-  FlatList,
+  RefreshControl,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useRouter } from 'expo-router';
 import { supabase } from '../../src/lib/supabase';
 
-const DEADLINE = new Date('2026-06-11T19:00:00Z');
+interface LeaderboardRow {
+  user_id: string;
+  total_points: number;
+  exact_scores: number;
+  correct_winners: number;
+  username: string;
+}
 
-export default function PuntuacionScreen() {
+export default function LeaderboardScreen() {
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [teams, setTeams] = useState([]);
-  const [activeGroup, setActiveGroup] = useState(null);
-  const [userId, setUserId] = useState(null);
-  const [picks, setPicks] = useState({
-    champion_team_id: null,
-    finalist_team_id: null,
-    semi1_team_id: null,
-    semi2_team_id: null,
-    semi3_team_id: null,
-    semi4_team_id: null,
-  });
-  const [isLocked, setIsLocked] = useState(false);
-  const [timeLeft, setTimeLeft] = useState('');
-  
-  // Modal state
-  const [modalVisible, setModalVisible] = useState(false);
-  const [selectingKey, setSelectingKey] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
+  const [groupName, setGroupName] = useState<string | null>(null);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardRow[]>([]);
+  const [userId, setUserId] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchData();
-    const timer = setInterval(updateCountdown, 1000);
-    return () => clearInterval(timer);
-  }, []);
+  const router = useRouter();
 
-  const updateCountdown = useCallback(() => {
-    const now = new Date();
-    const diff = DEADLINE.getTime() - now.getTime();
-    
-    if (diff <= 0) {
-      setTimeLeft('CERRADO');
-      setIsLocked(true);
-    } else {
-      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-      const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-      const pad = (num) => num.toString().padStart(2, '0');
-      setTimeLeft(`${days}d ${pad(hours)}h ${pad(minutes)}m ${pad(seconds)}s`);
-      setIsLocked(false);
+  const fetchActiveGroup = useCallback(async () => {
+    try {
+      const persisted = await AsyncStorage.getItem('@active_group_id');
+      return persisted;
+    } catch (e) {
+      console.error('Error reading active group ID from AsyncStorage:', e);
+      return null;
     }
   }, []);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
       setUserId(user.id);
 
-      // 1. Obtener equipos
-      const { data: teamsData } = await supabase
-        .from('teams')
-        .select('id, name, code, flag_emoji')
-        .order('name');
-      setTeams(teamsData || []);
-
-      // 2. Obtener grupo activo
-      const { data: groups } = await supabase
-        .from('group_members')
-        .select('group_id')
-        .eq('user_id', user.id)
-        .limit(1);
-
-      if (groups && groups.length > 0) {
-        const groupId = groups[0].group_id;
-        setActiveGroup(groupId);
-
-        // 3. Obtener picks existentes
-        const { data: picksData } = await supabase
-          .from('pre_tournament_picks')
-          .select('*')
-          .eq('user_id', user.id)
-          .eq('group_id', groupId)
-          .maybeSingle();
-
-        if (picksData) {
-          setPicks({
-            champion_team_id: picksData.champion_team_id,
-            finalist_team_id: picksData.finalist_team_id,
-            semi1_team_id: picksData.semi1_team_id,
-            semi2_team_id: picksData.semi2_team_id,
-            semi3_team_id: picksData.semi3_team_id,
-            semi4_team_id: picksData.semi4_team_id,
-          });
-        }
+      const groupId = await fetchActiveGroup();
+      if (!groupId) {
+        setActiveGroupId(null);
+        setGroupName(null);
+        setLeaderboard([]);
+        setLoading(false);
+        setRefreshing(false);
+        return;
       }
+      setActiveGroupId(groupId);
+
+      // 1. Obtener detalles del grupo
+      const { data: group, error: groupErr } = await supabase
+        .from('groups')
+        .select('name')
+        .eq('id', groupId)
+        .single();
+      
+      if (groupErr) {
+        console.warn('Error fetching group details:', groupErr);
+      } else {
+        setGroupName(group.name);
+      }
+
+      // 2. Obtener todos los miembros del grupo
+      const { data: members, error: membersError } = await supabase
+        .from('group_members')
+        .select('user_id, users(username)')
+        .eq('group_id', groupId);
+
+      if (membersError) throw membersError;
+
+      // 3. Obtener los puntajes reales de leaderboard
+      const { data: lbData, error: lbError } = await supabase
+        .from('leaderboard')
+        .select('user_id, total_points, exact_scores, correct_winners')
+        .eq('group_id', groupId);
+      
+      if (lbError) throw lbError;
+
+      const lbMap = new Map<string, any>();
+      if (lbData) {
+        lbData.forEach(row => {
+          lbMap.set(row.user_id, row);
+        });
+      }
+
+      // 4. Mezclar los datos de miembros con los de leaderboard
+      const rows = (members || []).map((m: any) => {
+        const scoreInfo = lbMap.get(m.user_id);
+        const username = m.users?.username || 'Usuario';
+        return {
+          user_id: m.user_id,
+          total_points: scoreInfo?.total_points ?? 0,
+          exact_scores: scoreInfo?.exact_scores ?? 0,
+          correct_winners: scoreInfo?.correct_winners ?? 0,
+          username,
+        };
+      });
+
+      // 5. Ordenar por puntaje descendente
+      rows.sort((a, b) => b.total_points - a.total_points);
+
+      setLeaderboard(rows);
     } catch (error) {
-      console.error('Error fetching data:', error);
+      console.error('Error fetching leaderboard screen:', error);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
+  }, [fetchActiveGroup]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    fetchData();
   };
 
-  const handleSavePicks = async () => {
-    if (isLocked) {
-      Alert.alert('Error', 'El tiempo para guardar picks ha terminado.');
-      return;
+  const getInitials = (username: string) => {
+    const target = username || 'U';
+    const parts = target.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[1][0]).toUpperCase();
     }
-    if (!activeGroup) {
-      Alert.alert('Error', 'Debes unirte a un grupo primero.');
-      return;
-    }
-
-    setSaving(true);
-    try {
-      const { error } = await supabase
-        .from('pre_tournament_picks')
-        .upsert({
-          user_id: userId,
-          group_id: activeGroup,
-          ...picks,
-          is_locked: false,
-        }, { onConflict: 'user_id, group_id' });
-
-      if (error) throw error;
-      Alert.alert('Éxito', 'Tus Early Picks han sido guardados.');
-    } catch (error) {
-      Alert.alert('Error', 'No se pudieron guardar los picks.');
-      console.error(error);
-    } finally {
-      setSaving(false);
-    }
+    return target.substring(0, 2).toUpperCase();
   };
 
-  const openSelector = (key) => {
-    if (isLocked) return;
-    setSelectingKey(key);
-    setModalVisible(true);
-  };
+  const renderItem = ({ item, index }: { item: LeaderboardRow; index: number }) => {
+    const isMe = item.user_id === userId;
+    const isTopThree = index < 3;
+    const rankColor = isTopThree ? '#00FF41' : '#b9ccb2';
 
-  const selectTeam = (teamId) => {
-    setPicks(prev => ({ ...prev, [selectingKey]: teamId }));
-    setModalVisible(false);
-  };
+    return (
+      <View style={[styles.row, isMe && styles.myRow]}>
+        <Text style={[styles.rank, { color: rankColor }]}>{index + 1}</Text>
+        
+        <View style={[styles.avatar, isMe && styles.myAvatar]}>
+          <Text style={[styles.avatarText, isMe && styles.myAvatarText]}>{getInitials(item.username)}</Text>
+        </View>
 
-  const getTeamLabel = (id) => {
-    const team = teams.find(t => t.id === id);
-    return team ? `${team.flag_emoji} ${team.name}` : 'Seleccionar equipo...';
+        <Text style={[styles.username, isMe && styles.myText]} numberOfLines={1}>
+          {item.username} {isMe ? ' (tú)' : ''}
+        </Text>
+
+        <View style={styles.pointsCol}>
+          <Text style={styles.points}>{item.total_points} pts</Text>
+          <Text style={styles.statsSub}>
+            {item.exact_scores} exactos • {item.correct_winners} ganadores
+          </Text>
+        </View>
+      </View>
+    );
   };
 
   if (loading) {
@@ -167,145 +175,186 @@ export default function PuntuacionScreen() {
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>PUNTUACIÓN</Text>
-
-      {/* 1. SISTEMA DE PUNTOS */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>SISTEMA DE PUNTOS</Text>
-        <View style={styles.card}>
-          <View style={styles.ruleRow}>
-            <View style={[styles.pointBadge, { backgroundColor: '#00FF41' }]}>
-              <Text style={styles.pointText}>+3</Text>
-            </View>
-            <View style={styles.ruleInfo}>
-              <Text style={styles.ruleTitle}>Resultado Exacto</Text>
-              <Text style={styles.ruleDesc}>Adivinas el marcador exacto (ej: 2-1)</Text>
-            </View>
+    <View style={styles.container}>
+      {/* Header */}
+      <View style={styles.header}>
+        <Text style={styles.title}>POSICIONES</Text>
+        {groupName && (
+          <View style={styles.groupBadge}>
+            <Ionicons name="people" size={14} color="#00FF41" />
+            <Text style={styles.groupName}>{groupName}</Text>
           </View>
-          <View style={styles.ruleRow}>
-            <View style={[styles.pointBadge, { backgroundColor: '#1a2e1c', borderColor: '#00FF41', borderWidth: 1 }]}>
-              <Text style={[styles.pointText, { color: '#00FF41' }]}>+1</Text>
-            </View>
-            <View style={styles.ruleInfo}>
-              <Text style={styles.ruleTitle}>Ganador / Empate</Text>
-              <Text style={styles.ruleDesc}>Aciertas quién gana o si hay empate</Text>
-            </View>
-          </View>
-        </View>
-
-        <Text style={[styles.sectionTitle, { marginTop: 24 }]}>BONOS EXTRA</Text>
-        <View style={styles.card}>
-          <Text style={styles.bonusItem}>• Posición exacta en grupo: <Text style={styles.bonusPoint}>+1 pt</Text></Text>
-          <Text style={styles.bonusItem}>• Semifinalista pre-torneo: <Text style={styles.bonusPoint}>+2 pts c/u</Text></Text>
-          <Text style={styles.bonusItem}>• Finalista pre-torneo: <Text style={styles.bonusPoint}>+5 pts</Text></Text>
-          <Text style={styles.bonusItem}>• Campeón pre-torneo: <Text style={styles.bonusPoint}>+10 pts</Text></Text>
-        </View>
+        )}
       </View>
 
-      {/* 2. EARLY PICKS */}
-      <View style={styles.section}>
-        <View style={styles.headerRow}>
-          <Text style={styles.sectionTitle}>EARLY PICKS</Text>
-          <View style={[styles.timerBadge, isLocked && { backgroundColor: '#ff4b4b' }]}>
-            <Ionicons name="time-outline" size={14} color="#000" />
-            <Text style={styles.timerText}>{timeLeft}</Text>
-          </View>
-        </View>
-        
-        <View style={styles.card}>
-          <Text style={styles.earlyDesc}>Elige a tus favoritos antes del inicio del torneo para ganar puntos extra.</Text>
-          
-          <Text style={styles.label}>CAMPEÓN</Text>
-          <TouchableOpacity style={styles.selector} onPress={() => openSelector('champion_team_id')}>
-            <Text style={styles.selectorText}>{getTeamLabel(picks.champion_team_id)}</Text>
-            <Ionicons name="chevron-down" size={20} color="#00FF41" />
-          </TouchableOpacity>
-
-          <Text style={styles.label}>FINALISTA</Text>
-          <TouchableOpacity style={styles.selector} onPress={() => openSelector('finalist_team_id')}>
-            <Text style={styles.selectorText}>{getTeamLabel(picks.finalist_team_id)}</Text>
-            <Ionicons name="chevron-down" size={20} color="#00FF41" />
-          </TouchableOpacity>
-
-          <Text style={styles.label}>SEMIFINALISTAS</Text>
-          {['semi1_team_id', 'semi2_team_id', 'semi3_team_id', 'semi4_team_id'].map((key, i) => (
-            <TouchableOpacity key={key} style={styles.selector} onPress={() => openSelector(key)}>
-              <Text style={styles.selectorText}>{getTeamLabel(picks[key])}</Text>
-              <Ionicons name="chevron-down" size={20} color="#00FF41" />
-            </TouchableOpacity>
-          ))}
-
-          <TouchableOpacity 
-            style={[styles.saveBtn, (isLocked || saving) && styles.disabledBtn]} 
-            onPress={handleSavePicks}
-            disabled={isLocked || saving}
+      {activeGroupId ? (
+        <FlatList
+          data={leaderboard}
+          keyExtractor={(item) => item.user_id}
+          renderItem={renderItem}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00FF41" />
+          }
+          contentContainerStyle={styles.listContent}
+          ListHeaderComponent={
+            <View style={styles.listHeader}>
+              <Text style={[styles.headerText, { width: 30 }]}>#</Text>
+              <Text style={[styles.headerText, { marginLeft: 12 }, styles.flexLabel]}>USUARIO</Text>
+              <Text style={[styles.headerText, { textAlign: 'right', marginRight: 8 }]}>PUNTOS</Text>
+            </View>
+          }
+          ListEmptyComponent={
+            <View style={styles.emptyState}>
+              <Ionicons name="people-outline" size={48} color="#666" />
+              <Text style={styles.emptyText}>No hay miembros en este grupo aún.</Text>
+            </View>
+          }
+        />
+      ) : (
+        <View style={styles.emptyStateContainer}>
+          <Ionicons name="alert-circle-outline" size={64} color="#666" />
+          <Text style={styles.emptyTitle}>Sin Grupo Activo</Text>
+          <Text style={styles.emptyDesc}>
+            Para ver la tabla de posiciones debes crear o unirte a un grupo privado.
+          </Text>
+          <TouchableOpacity
+            style={styles.emptyBtn}
+            onPress={() => router.push('/groups/selection')}
           >
-            {saving ? <ActivityIndicator color="#000" /> : <Text style={styles.saveBtnText}>GUARDAR PICKS</Text>}
+            <Text style={styles.emptyBtnText}>UNIRSE O CREAR GRUPO</Text>
           </TouchableOpacity>
         </View>
-      </View>
-
-      {/* Selector Modal */}
-      <Modal visible={modalVisible} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>SELECCIONAR EQUIPO</Text>
-              <TouchableOpacity onPress={() => setModalVisible(false)}>
-                <Ionicons name="close" size={24} color="#fff" />
-              </TouchableOpacity>
-            </View>
-            <FlatList
-              data={teams}
-              keyExtractor={(item) => item.id}
-              renderItem={({ item }) => (
-                <TouchableOpacity style={styles.teamItem} onPress={() => selectTeam(item.id)}>
-                  <Text style={styles.teamItemFlag}>{item.flag_emoji}</Text>
-                  <Text style={styles.teamItemName}>{item.name}</Text>
-                  <Text style={styles.teamItemCode}>{item.code}</Text>
-                </TouchableOpacity>
-              )}
-            />
-          </View>
-        </View>
-      </Modal>
-    </ScrollView>
+      )}
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#131313' },
-  content: { padding: 20, paddingTop: 60, paddingBottom: 100 },
-  centered: { justifyContent: 'center', alignItems: 'center' },
-  title: { color: '#00FF41', fontSize: 28, fontWeight: '900', marginBottom: 30, textAlign: 'center' },
-  section: { marginBottom: 30 },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  sectionTitle: { color: '#00FF41', fontSize: 14, fontWeight: '800', letterSpacing: 1.5 },
-  card: { backgroundColor: '#201f1f', borderRadius: 12, padding: 20, borderWidth: 1, borderColor: '#3b4b37' },
-  ruleRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  pointBadge: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
-  pointText: { color: '#000', fontWeight: '900', fontSize: 16 },
-  ruleInfo: { flex: 1 },
-  ruleTitle: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  ruleDesc: { color: '#b9ccb2', fontSize: 12 },
-  bonusItem: { color: '#fff', fontSize: 14, marginBottom: 8 },
-  bonusPoint: { color: '#00FF41', fontWeight: '800' },
-  timerBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#00FF41', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
-  timerText: { color: '#000', fontSize: 12, fontWeight: '800', marginLeft: 4 },
-  earlyDesc: { color: '#b9ccb2', fontSize: 13, marginBottom: 20 },
-  label: { color: '#00FF41', fontSize: 10, fontWeight: '800', marginTop: 15, marginBottom: 8, letterSpacing: 1 },
-  selector: { backgroundColor: '#131313', padding: 15, borderRadius: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: '#3b4b37', marginBottom: 5 },
-  selectorText: { color: '#fff', fontSize: 14 },
-  saveBtn: { backgroundColor: '#00FF41', padding: 18, borderRadius: 8, marginTop: 30, alignItems: 'center' },
-  disabledBtn: { backgroundColor: '#3b4b37' },
-  saveBtnText: { color: '#000', fontWeight: '900', fontSize: 16 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#201f1f', height: '80%', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  modalTitle: { color: '#00FF41', fontSize: 18, fontWeight: '900' },
-  teamItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: '#3b4b37' },
-  teamItemFlag: { fontSize: 24, marginRight: 15 },
-  teamItemName: { color: '#fff', fontSize: 16, flex: 1 },
-  teamItemCode: { color: '#666', fontSize: 14, fontWeight: '700' },
+const styles: any = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#131313', paddingTop: Platform.OS === 'ios' ? 60 : 20 },
+  centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  
+  // Header
+  header: {
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#201f1f',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  title: { color: '#00FF41', fontSize: 24, fontWeight: '900', letterSpacing: 1.5 },
+  groupBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1a2e1c',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#3b4b37',
+    gap: 6,
+  },
+  groupName: { color: '#fff', fontSize: 13, fontWeight: '700' },
+
+  // List content
+  listContent: { paddingHorizontal: 20, paddingBottom: 40 },
+  listHeader: {
+    flexDirection: 'row',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#3b4b37',
+    marginBottom: 8,
+  },
+  headerText: { color: '#666', fontSize: 11, fontWeight: '800', letterSpacing: 1 },
+  flexLabel: { flex: 1 },
+
+  // Row
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#201f1f',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#3b4b37',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 8,
+  },
+  myRow: {
+    backgroundColor: '#1a2e1c',
+    borderColor: '#00FF41',
+  },
+  rank: {
+    width: 30,
+    fontSize: 16,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  avatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#131313',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#3b4b37',
+    marginLeft: 12,
+    marginRight: 12,
+  },
+  myAvatar: {
+    borderColor: '#00FF41',
+  },
+  avatarText: {
+    color: '#b9ccb2',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  myAvatarText: {
+    color: '#00FF41',
+  },
+  username: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '600',
+    flex: 1,
+  },
+  myText: {
+    color: '#fff',
+    fontWeight: '800',
+  },
+  pointsCol: {
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  points: {
+    color: '#00FF41',
+    fontSize: 16,
+    fontWeight: '900',
+    textAlign: 'right',
+  },
+  statsSub: {
+    color: '#666',
+    fontSize: 9,
+    marginTop: 2,
+    textAlign: 'right',
+  },
+
+  // Empty state in list
+  emptyState: { padding: 40, alignItems: 'center', justifyContent: 'center' },
+  emptyText: { color: '#666', fontSize: 14, marginTop: 12 },
+
+  // Empty active group state
+  emptyStateContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 40,
+    marginTop: -40,
+  },
+  emptyTitle: { color: '#fff', fontSize: 20, fontWeight: '800', marginTop: 16 },
+  emptyDesc: { color: '#b9ccb2', textAlign: 'center', marginTop: 8, marginBottom: 24, lineHeight: 20 },
+  emptyBtn: { backgroundColor: '#00FF41', paddingVertical: 14, paddingHorizontal: 24, borderRadius: 4 },
+  emptyBtnText: { color: '#000', fontWeight: '800', fontSize: 13 },
 });

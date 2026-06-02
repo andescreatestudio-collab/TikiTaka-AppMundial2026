@@ -41,6 +41,16 @@ const DURATION_OPTIONS = [
   { label: '2 horas', value: 120 },
 ];
 
+// ─── Opciones de ronda ────────────────────────────────────────────────────────
+const ROUND_OPTIONS = [
+  { label: 'Grupos',    value: 'group'  },
+  { label: 'R32',       value: 'R32'    },
+  { label: 'R16',       value: 'R16'    },
+  { label: 'Cuartos',   value: 'QF'     },
+  { label: 'Semis',     value: 'SF'     },
+  { label: 'Final',     value: 'final'  },
+];
+
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 type AppConfig = {
   simulation_mode: boolean;
@@ -85,9 +95,16 @@ export default function SimulationPanel() {
   const [top5, setTop5]               = useState<LeaderRow[]>([]);
 
   // Estado de acciones
-  const [busyReset, setBusyReset]     = useState(false);
-  const [busyRecalc, setBusyRecalc]   = useState(false);
-  const [busySim, setBusySim]         = useState(false);
+  const [busyReset, setBusyReset]       = useState(false);
+  const [busyRecalc, setBusyRecalc]     = useState(false);
+  const [busySim, setBusySim]           = useState(false);
+  const [busyPredictions, setBusyPredictions] = useState(false);
+
+  // Ronda seleccionada para predicciones aleatorias
+  const [selectedPredRound, setSelectedPredRound] = useState<string>('group');
+
+  // Log de última acción (visible en el panel)
+  const [lastAction, setLastAction]   = useState<{ msg: string; ok: boolean; ts: string } | null>(null);
 
   // Velocidad seleccionada
   const [selectedDuration, setSelectedDuration] = useState(30);
@@ -188,77 +205,194 @@ export default function SimulationPanel() {
   // ─── Iniciar Simulación Completa ────────────────────────────────────────────────
   const handleIniciarSim = () => {
     const opt = DURATION_OPTIONS.find(o => o.value === selectedDuration);
-    Alert.alert(
-      '🚀 Iniciar Simulación Completa',
-      `Se realizará un reset total, se generarán predicciones y early picks para todos los usuarios, y se distribuirán los 104 partidos en ${opt?.label}.\n\n¿Confirmar?`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'INICIAR',
-          onPress: async () => {
-            setBusySim(true);
-            const { data, error } = await supabase.rpc('iniciar_simulacion_completa', {
-              duracion_minutos: selectedDuration,
-            });
-            setBusySim(false);
-            if (error) {
-              Alert.alert('Error', error.message);
-            } else {
-              const res = data as any;
-              const endDate = new Date(res.ends_at);
-              Alert.alert(
-                '✅ Simulación Iniciada',
-                `${res.matches_updated} kickoffs actualizados.\nFinaliza: ${endDate.toLocaleTimeString()}`
-              );
-              startCountdown(res.ends_at);
-              setConfig(prev => ({
-                ...prev,
-                simulation_duration_minutes: selectedDuration,
-                simulation_end_at: res.ends_at,
-              }));
-              loadAll();
-            }
+    const msgConfirm = `Se realizará un reset total, se generarán predicciones y early picks para todos los usuarios, y se distribuirán los 104 partidos en ${opt?.label}.\n\n¿Confirmar?`;
+
+    const performIniciarSim = async () => {
+      setBusySim(true);
+      setLastAction(null);
+      const ts = new Date().toLocaleTimeString();
+      const { data, error } = await supabase.rpc('iniciar_simulacion_completa', {
+        duracion_minutos: selectedDuration,
+      });
+      setBusySim(false);
+      if (error) {
+        const msg = `[${ts}] ❌ SIM FALLÓ: ${error.message}`;
+        setLastAction({ msg, ok: false, ts });
+        if (Platform.OS === 'web') {
+          window.alert(`❌ Error: ${error.message}`);
+        } else {
+          Alert.alert('Error', error.message);
+        }
+      } else {
+        const res = data as any;
+        const endDate = new Date(res.ends_at);
+        const msg = `[${ts}] ✅ Sim iniciada — ${res.matches_updated} kickoffs · Fin: ${endDate.toLocaleTimeString()}`;
+        setLastAction({ msg, ok: true, ts });
+        if (Platform.OS === 'web') {
+          window.alert(`✅ Simulación Iniciada\n${res.matches_updated} kickoffs actualizados.\nFinaliza: ${endDate.toLocaleTimeString()}`);
+        } else {
+          Alert.alert(
+            '✅ Simulación Iniciada',
+            `${res.matches_updated} kickoffs actualizados.\nFinaliza: ${endDate.toLocaleTimeString()}`
+          );
+        }
+        startCountdown(res.ends_at);
+        setConfig(prev => ({
+          ...prev,
+          simulation_duration_minutes: selectedDuration,
+          simulation_end_at: res.ends_at,
+        }));
+        loadAll();
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      const ok = window.confirm(`🚀 Iniciar Simulación Completa\n\n${msgConfirm}`);
+      if (ok) {
+        performIniciarSim();
+      }
+    } else {
+      Alert.alert(
+        '🚀 Iniciar Simulación Completa',
+        msgConfirm,
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          {
+            text: 'INICIAR',
+            onPress: performIniciarSim,
           },
-        },
-      ]
-    );
+        ]
+      );
+    }
   };
 
   // ─── Reset ────────────────────────────────────────────────────────────────────
   const handleReset = () => {
-    Alert.alert(
-      '⚠️ Reset Completo',
-      'Eliminará TODAS las predicciones, reiniciará el leaderboard a 0 y limpiará todos los scores. ¿Confirmar?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'RESET',
-          style: 'destructive',
-          onPress: async () => {
-            setBusyReset(true);
-            const { error } = await supabase.rpc('reset_simulation');
-            setBusyReset(false);
-            if (error) {
-              Alert.alert('Error en Reset', error.message);
-            } else {
-              Alert.alert('✅ Reset Completo', 'Todo limpiado correctamente.');
-              loadAll();
-            }
+    const performReset = async () => {
+      setBusyReset(true);
+      setLastAction(null);
+      const ts = new Date().toLocaleTimeString();
+      const { error } = await supabase.rpc('reset_simulation');
+      setBusyReset(false);
+      if (error) {
+        const msg = `[${ts}] ❌ RESET FALLÓ: ${error.message}`;
+        setLastAction({ msg, ok: false, ts });
+        if (Platform.OS === 'web') {
+          window.alert(`❌ Error en Reset: ${error.message}`);
+        } else {
+          Alert.alert('Error en Reset', error.message);
+        }
+      } else {
+        const msg = `[${ts}] ✅ Reset ejecutado — scores=null, status=scheduled, leaderboard vacío`;
+        setLastAction({ msg, ok: true, ts });
+        if (Platform.OS === 'web') {
+          window.alert('✅ Reset Completo: Todo limpiado correctamente.');
+        } else {
+          Alert.alert('✅ Reset Completo', 'Todo limpiado correctamente.');
+        }
+        loadAll();
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      const ok = window.confirm(
+        '⚠️ Reset Completo\n\nEliminará TODAS las predicciones, reiniciará el leaderboard a 0 y limpiará todos los scores. ¿Confirmar?'
+      );
+      if (ok) {
+        performReset();
+      }
+    } else {
+      Alert.alert(
+        '⚠️ Reset Completo',
+        'Eliminará TODAS las predicciones, reiniciará el leaderboard a 0 y limpiará todos los scores. ¿Confirmar?',
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          {
+            text: 'RESET',
+            style: 'destructive',
+            onPress: performReset,
           },
-        },
-      ]
-    );
+        ]
+      );
+    }
   };
+
+  // ─── Generar predicciones aleatorias ─────────────────────────────────────────
+  const handleGeneratePredictions = async () => {
+    const roundLabel = ROUND_OPTIONS.find(r => r.value === selectedPredRound)?.label ?? selectedPredRound;
+    console.log('[SimPanel] handleGeneratePredictions called — round:', selectedPredRound, '| label:', roundLabel);
+
+    // En web, Alert.alert() es un no-op — usar window.confirm() en su lugar
+    if (Platform.OS === 'web') {
+      const ok = window.confirm(
+        `🎲 Generar predicciones aleatorias\n\nSe insertarán predicciones (0-4 vs 0-4) para todos los usuarios en partidos de "${roundLabel}" que no estén finalizados y sin predicción previa.\n\n¿Confirmar?`
+      );
+      if (!ok) return;
+      await runGeneratePredictions(roundLabel);
+    } else {
+      Alert.alert(
+        '🎲 Generar predicciones aleatorias',
+        `Se insertarán predicciones aleatorias (0-4 vs 0-4) para todos los usuarios en partidos de ronda "${roundLabel}" que aún no estén finalizados y no tengan predicción.\n\n¿Confirmar?`,
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          { text: 'GENERAR', onPress: () => runGeneratePredictions(roundLabel) },
+        ]
+      );
+    }
+  };
+
+  const runGeneratePredictions = async (roundLabel: string) => {
+    console.log('[SimPanel] Confirmado — llamando RPC generate_random_predictions con p_round:', selectedPredRound);
+    setBusyPredictions(true);
+    setLastAction(null);
+    const ts = new Date().toLocaleTimeString();
+    const { data, error } = await supabase.rpc('generate_random_predictions', {
+      p_round: selectedPredRound,
+    });
+    console.log('[SimPanel] RPC response — data:', JSON.stringify(data), '| error:', error);
+    setBusyPredictions(false);
+    if (error) {
+      const msg = `[${ts}] ❌ PRED ALEATORIA FALLÓ: ${error.message}`;
+      console.error('[SimPanel] RPC error details:', error);
+      setLastAction({ msg, ok: false, ts });
+      if (Platform.OS === 'web') {
+        window.alert(`❌ Error: ${error.message}`);
+      } else {
+        Alert.alert('Error', error.message);
+      }
+    } else {
+      const r = data as any;
+      const msg = `[${ts}] ✅ Predicciones generadas — ${r?.inserted ?? 0} insertadas · ${r?.skipped ?? 0} omitidas (ya existían) · Ronda: ${r?.round}`;
+      console.log('[SimPanel]', msg);
+      setLastAction({ msg, ok: true, ts });
+      if (Platform.OS === 'web') {
+        window.alert(`✅ Predicciones Generadas\nRonda: ${roundLabel}\nInsertadas: ${r?.inserted ?? 0}\nOmitidas: ${r?.skipped ?? 0}`);
+      } else {
+        Alert.alert(
+          '✅ Predicciones Generadas',
+          `Ronda: ${roundLabel}\nInsertadas: ${r?.inserted ?? 0}\nOmitidas (ya existían): ${r?.skipped ?? 0}`
+        );
+      }
+      loadAll();
+    }
+  };
+
 
   // ─── Recalcular ───────────────────────────────────────────────────────────────
   const handleRecalc = async () => {
     setBusyRecalc(true);
+    setLastAction(null);
+    const ts = new Date().toLocaleTimeString();
     const { data, error } = await supabase.rpc('recalcular_todos_los_puntos');
     setBusyRecalc(false);
     if (error) {
+      const msg = `[${ts}] ❌ RECÁLCULO FALLÓ: ${error.message}`;
+      setLastAction({ msg, ok: false, ts });
       Alert.alert('Error en Recálculo', error.message);
     } else {
       const r = data as any;
+      const msg = `[${ts}] ✅ Recálculo OK — ${r?.matches_processed ?? '?'} partidos · ${r?.errors ?? 0} errores`;
+      setLastAction({ msg, ok: true, ts });
       Alert.alert('✅ Recálculo Completo', `${r?.matches_processed ?? '?'} partidos · ${r?.errors ?? 0} errores.`);
       loadAll();
     }
@@ -444,6 +578,75 @@ export default function SimulationPanel() {
           danger
         />
       </View>
+
+      <View style={[styles.actionGrid, { marginTop: -4 }]}>
+        <ActionButton
+          label="Invitar Usuario"
+          sub="Enviar correo para unirse a tus ligas"
+          icon="mail-open-outline"
+          color={GRN}
+          busy={false}
+          onPress={() => router.push('/invite' as any)}
+        />
+        <View style={{ flex: 1 }} />
+      </View>
+
+      {/* ── PREDICCIONES ALEATORIAS ── */}
+      <SectionTitle label="PREDICCIONES ALEATORIAS" icon="dice-outline" />
+      <View style={styles.card}>
+        <Text style={styles.speedTitle}>Generar predicciones por ronda</Text>
+        <Text style={styles.speedSub}>
+          Inserta scores aleatorios (0–4) para todos los usuarios en partidos no finalizados de la ronda seleccionada. Solo crea predicciones que aún no existen.
+        </Text>
+
+        {/* Selector de ronda */}
+        <View style={styles.roundGrid}>
+          {ROUND_OPTIONS.map(opt => {
+            const active = selectedPredRound === opt.value;
+            return (
+              <TouchableOpacity
+                key={opt.value}
+                style={[styles.roundBtn, active && styles.roundBtnActive]}
+                onPress={() => setSelectedPredRound(opt.value)}
+                activeOpacity={0.75}
+              >
+                <Text style={[styles.roundLabel, active && styles.roundLabelActive]}>
+                  {opt.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {/* Botón generar */}
+        <TouchableOpacity
+          style={[styles.predBtn, busyPredictions && styles.startBtnDisabled]}
+          onPress={handleGeneratePredictions}
+          disabled={busyPredictions}
+          activeOpacity={0.8}
+        >
+          {busyPredictions
+            ? <ActivityIndicator color="#000" size="small" />
+            : <Text style={styles.predBtnEmoji}>🎲</Text>
+          }
+          <Text style={styles.predBtnText}>
+            {busyPredictions ? 'Generando...' : 'Generar predicciones aleatorias'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* ── LOG DE ÚLTIMA ACCIÓN ── */}
+      {lastAction && (
+        <View style={[styles.logBanner, lastAction.ok ? styles.logBannerOk : styles.logBannerErr]}>
+          <Ionicons
+            name={lastAction.ok ? 'checkmark-circle' : 'alert-circle'}
+            size={14}
+            color={lastAction.ok ? GRN : RED}
+            style={{ marginRight: 6 }}
+          />
+          <Text style={styles.logBannerText} selectable>{lastAction.msg}</Text>
+        </View>
+      )}
 
       {/* ── ESTADÍSTICAS ── */}
       <SectionTitle label="ESTADÍSTICAS" icon="bar-chart-outline" />
@@ -648,6 +851,35 @@ const styles = StyleSheet.create({
   actionBtnDanger: { borderColor: RED + '40' },
   actionLabel:     { fontWeight: '800', fontSize: 13, marginBottom: 4, textAlign: 'center' },
   actionSub:       { color: DIM, fontSize: 10, textAlign: 'center' },
+
+  // Round selector (predicciones aleatorias)
+  roundGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 },
+  roundBtn: {
+    paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8,
+    backgroundColor: '#242424', borderWidth: 1, borderColor: '#333',
+  },
+  roundBtnActive:  { backgroundColor: '#4fc3f718', borderColor: '#4fc3f7' },
+  roundLabel:      { color: DIM2, fontSize: 12, fontWeight: '700' },
+  roundLabelActive:{ color: '#4fc3f7' },
+
+  // Pred button
+  predBtn: {
+    backgroundColor: '#4fc3f7', borderRadius: 8, paddingVertical: 14,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+  },
+  predBtnEmoji: { fontSize: 18 },
+  predBtnText:  { color: '#000', fontWeight: '900', fontSize: 13 },
+
+  // Log de última acción
+  logBanner: {
+    flexDirection: 'row', alignItems: 'flex-start',
+    marginHorizontal: 20, marginBottom: 16,
+    borderRadius: 8, padding: 12,
+    backgroundColor: '#1a1a1a', borderWidth: 1,
+  },
+  logBannerOk:   { borderColor: GRN + '60' },
+  logBannerErr:  { borderColor: RED + '60' },
+  logBannerText: { color: '#b0b0b0', fontSize: 11, flex: 1, lineHeight: 16, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
 
   // Progress
   progressLabel:   { color: '#ccc', fontSize: 12, fontWeight: '700', marginBottom: 10 },

@@ -10,6 +10,7 @@ import {
   TouchableOpacity, ScrollView, StatusBar,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../src/lib/supabase';
 
 const { width: SW, height: SH } = Dimensions.get('window');
@@ -181,18 +182,34 @@ export default function ChampionScreen() {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) setUserId(user.id);
 
+      const formatLeaderboard = (data: any[]): LeaderboardEntry[] => {
+        return data.map((row: any) => ({
+          user_id: row.user_id,
+          total_points: row.total_points,
+          users: Array.isArray(row.users)
+            ? (row.users[0] ?? { username: 'Jugador' })
+            : (row.users ?? { username: 'Jugador' }),
+        }));
+      };
+
       // 1. Partido final (match_number = 104 o round = 'final')
-      const { data: finals } = await supabase
+      const { data: finals, error: finalError } = await supabase
         .from('matches')
         .select(`
+          status,
           home_score, away_score, home_penalties, away_penalties,
           home_team:teams!home_team_id(name, code),
           away_team:teams!away_team_id(name, code)
         `)
         .eq('round', 'final')
-        .not('home_score', 'is', null)
         .limit(1)
-        .single();
+        .maybeSingle();
+
+      if (finalError || !finals || finals.status !== 'finished' || finals.home_score === null) {
+        // Si el partido final no está finalizado o no existe, redirigimos de inmediato al home/dashboard
+        router.replace('/(tabs)');
+        return;
+      }
 
       if (finals) {
         const hs = finals.home_score ?? 0;
@@ -205,12 +222,16 @@ export default function ChampionScreen() {
           ? hp > ap
           : hs > as_;
 
-        const winner  = homeWins ? finals.home_team : finals.away_team;
-        const loser   = homeWins ? finals.away_team : finals.home_team;
+        const winner = Array.isArray(homeWins ? finals.home_team : finals.away_team)
+          ? (homeWins ? finals.home_team : finals.away_team)[0]
+          : (homeWins ? finals.home_team : finals.away_team);
+        const loser = Array.isArray(homeWins ? finals.away_team : finals.home_team)
+          ? (homeWins ? finals.away_team : finals.home_team)[0]
+          : (homeWins ? finals.away_team : finals.home_team);
 
         setChampion({
-          team:       winner   as { name: string; code: string },
-          runnerUp:   loser    as { name: string; code: string },
+          team:       winner as unknown as { name: string; code: string },
+          runnerUp:   loser as unknown as { name: string; code: string },
           homeScore:  hs,
           awayScore:  as_,
           homePenalties: hp,
@@ -218,8 +239,19 @@ export default function ChampionScreen() {
         });
       }
 
-      // 2. Leaderboard del grupo activo
-      const groupId = params.groupId;
+      // 2. Leaderboard del grupo activo (intentamos leer del param o de AsyncStorage primero)
+      let groupId = params.groupId;
+      if (!groupId) {
+        try {
+          const persistedGroupId = await AsyncStorage.getItem('@active_group_id');
+          if (persistedGroupId) {
+            groupId = persistedGroupId;
+          }
+        } catch (e) {
+          console.error('[ChampionScreen] Error loading persisted group ID:', e);
+        }
+      }
+
       if (groupId) {
         const { data: lbData } = await supabase
           .from('leaderboard')
@@ -229,10 +261,10 @@ export default function ChampionScreen() {
           .limit(10);
 
         if (lbData && lbData.length > 0) {
-          setLeaderboard(lbData as LeaderboardEntry[]);
+          setLeaderboard(formatLeaderboard(lbData));
         }
       } else {
-        // Sin groupId, buscar primer grupo del usuario
+        // Sin groupId y sin persistedGroupId, buscar primer grupo del usuario como último recurso
         const { data: gm } = await supabase
           .from('group_members')
           .select('group_id')
@@ -248,7 +280,7 @@ export default function ChampionScreen() {
             .order('total_points', { ascending: false })
             .limit(10);
 
-          if (lbData) setLeaderboard(lbData as LeaderboardEntry[]);
+          if (lbData) setLeaderboard(formatLeaderboard(lbData));
         }
       }
     } catch (e) {

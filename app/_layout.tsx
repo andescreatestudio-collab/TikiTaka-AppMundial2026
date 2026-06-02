@@ -1,5 +1,5 @@
 import 'react-native-url-polyfill/auto';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack, useRouter, useSegments, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -17,6 +17,9 @@ export default function RootLayout() {
   const segments = useSegments();
   const pathname = usePathname();
   const router = useRouter();
+  // Ref que indica que estamos en modo PASSWORD_RECOVERY.
+  // Usamos ref (no state) para NO provocar re-renders adicionales en el guard.
+  const isPasswordRecovery = useRef(false);
 
   useEffect(() => {
     initSupabase().then(() => {
@@ -36,6 +39,14 @@ export default function RootLayout() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       console.log('AUTH STATE CHANGE:', event);
       setSession(session);
+
+      // Cuando Supabase detecta el token del correo de recuperación,
+      // marcar el flag ANTES de navegar para que el guard no interfiera.
+      if (event === 'PASSWORD_RECOVERY') {
+        console.log('PASSWORD_RECOVERY detectado -> navegando a /reset-password');
+        isPasswordRecovery.current = true;   // bloquea el guard
+        router.replace('/reset-password');
+      }
     });
 
     return () => subscription.unsubscribe();
@@ -45,13 +56,23 @@ export default function RootLayout() {
     console.log('NAVEGACIÓN - Sesión:', !!session, 'Iniciado:', initialized, 'Pathname:', pathname);
     if (!initialized || !envInitialized) return;
 
-    const isAuthPage = pathname.includes('login') || pathname.includes('register');
+    const isAuthPage  = pathname.includes('login') || pathname.includes('register');
+    const isResetPage = pathname.includes('reset-password');
 
-    if (!session && !isAuthPage) {
-      // No hay sesión y no estamos en login/register -> Forzar Login
+    // Si estamos en modo recuperación, limpiar el flag cuando ya estemos en la pantalla
+    // correcta y NO redirigir al dashboard aunque haya sesión.
+    if (isPasswordRecovery.current) {
+      if (isResetPage) {
+        isPasswordRecovery.current = false; // ya llegamos, limpiar
+      }
+      return; // nunca redirigir durante el flujo de recuperación
+    }
+
+    if (!session && !isAuthPage && !isResetPage) {
+      // Sin sesión fuera de páginas públicas -> Forzar Login
       router.replace('/login');
     } else if (session && isAuthPage) {
-      // Hay sesión y estamos en login/register -> Ir a la App
+      // Sesión activa en login/register -> Ir a la App
       router.replace('/(tabs)');
     }
   }, [session, initialized, envInitialized, pathname]);
@@ -89,6 +110,24 @@ export default function RootLayout() {
             headerShown: false,
             gestureEnabled: false,
           }}
+        />
+        <Stack.Screen
+          name="profile"
+          options={{
+            presentation: 'modal',
+            headerShown: false,
+          }}
+        />
+        <Stack.Screen
+          name="invite"
+          options={{
+            presentation: 'modal',
+            headerShown: false,
+          }}
+        />
+        <Stack.Screen
+          name="reset-password"
+          options={{ headerShown: false }}
         />
       </Stack>
       <StatusBar style="light" />

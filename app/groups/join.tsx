@@ -35,27 +35,36 @@ export default function JoinGroupScreen() {
         .upsert({ 
           id: user.id, 
           email: user.email, 
-          username: user.user_metadata?.username || user.email.split('@')[0] 
+          username: user.user_metadata?.username || (user.email ? user.email.split('@')[0] : 'usuario') 
         }, { onConflict: 'id' });
 
       if (userUpsertError) console.warn('User upsert warning:', userUpsertError.message);
 
-      // 1. Buscar el grupo por código
-      const { data: group, error: groupError } = await supabase
-        .from('groups')
-        .select('id, name')
-        .eq('invite_code', code.trim().toUpperCase())
-        .single();
+      // 1. Buscar el grupo por código usando RPC con SECURITY DEFINER
+      // (necesario porque la política RLS de groups_select_member bloquea
+      //  la búsqueda cuando el usuario aún no es miembro del grupo)
+      const { data: groupResults, error: groupError } = await supabase
+        .rpc('find_group_by_invite_code', { p_invite_code: code.trim() });
 
-      if (groupError || !group) throw new Error('Código de invitación inválido');
+      console.log('RPC find_group_by_invite_code response:', { groupResults, groupError });
+
+      // Admitimos si data viene como array [ {id, name, invite_code} ] o como objeto directo {id, name, invite_code}
+      const group = Array.isArray(groupResults) ? (groupResults[0] ?? null) : (groupResults ?? null);
+      
+      if (groupError || !group) {
+        if (groupError) console.error('RPC Error:', groupError.message);
+        throw new Error('Código de invitación inválido');
+      }
 
       // 2. Verificar si ya es miembro
+      // .maybeSingle() devuelve null (sin error) cuando no existe la fila,
+      // evitando el error 406 que lanza .single() cuando hay 0 resultados.
       const { data: existingMember } = await supabase
         .from('group_members')
         .select('id')
         .eq('group_id', group.id)
         .eq('user_id', user.id)
-        .single();
+        .maybeSingle();
 
       if (existingMember) {
         Alert.alert('Info', 'Ya eres miembro de este grupo');
@@ -73,7 +82,7 @@ export default function JoinGroupScreen() {
       Alert.alert('¡Éxito!', `Te has unido al grupo: ${group.name}`);
       router.replace('/(tabs)');
     } catch (error) {
-      Alert.alert('Error', error.message);
+      Alert.alert('Error', (error as any).message);
     } finally {
       setLoading(false);
     }
