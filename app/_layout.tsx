@@ -4,6 +4,7 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native
 import { Stack, useRouter, useSegments, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
+import * as Linking from 'expo-linking';
 import { supabase, initSupabase } from '../src/lib/supabase';
 import { Session } from '@supabase/supabase-js';
 
@@ -17,8 +18,6 @@ export default function RootLayout() {
   const segments = useSegments();
   const pathname = usePathname();
   const router = useRouter();
-  // Ref que indica que estamos en modo PASSWORD_RECOVERY.
-  // Usamos ref (no state) para NO provocar re-renders adicionales en el guard.
   const isPasswordRecovery = useRef(false);
 
   useEffect(() => {
@@ -30,7 +29,40 @@ export default function RootLayout() {
   useEffect(() => {
     if (!envInitialized) return;
 
-    // Escuchar cambios en la sesión
+    // ── Manejo de deep links (fix para APK nativo) ──────────────────
+    const handleDeepLink = (url: string) => {
+      if (url.includes('reset-password')) {
+        const hash = url.split('#')[1];
+        if (!hash) return;
+        const params = new URLSearchParams(hash);
+        const accessToken = params.get('access_token');
+        const refreshToken = params.get('refresh_token');
+
+        if (accessToken && refreshToken) {
+          supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          }).then(({ error }) => {
+            if (!error) {
+              isPasswordRecovery.current = true;
+              router.replace('/reset-password');
+            }
+          });
+        }
+      }
+    };
+
+    // App cerrada → abre por deep link
+    Linking.getInitialURL().then((url) => {
+      if (url) handleDeepLink(url);
+    });
+
+    // App abierta → llega deep link
+    const linkingSub = Linking.addEventListener('url', ({ url }) => {
+      handleDeepLink(url);
+    });
+
+    // ── Auth state change ───────────────────────────────────────────
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setInitialized(true);
@@ -40,39 +72,36 @@ export default function RootLayout() {
       console.log('AUTH STATE CHANGE:', event);
       setSession(session);
 
-      // Cuando Supabase detecta el token del correo de recuperación,
-      // marcar el flag ANTES de navegar para que el guard no interfiera.
       if (event === 'PASSWORD_RECOVERY') {
         console.log('PASSWORD_RECOVERY detectado -> navegando a /reset-password');
-        isPasswordRecovery.current = true;   // bloquea el guard
+        isPasswordRecovery.current = true;
         router.replace('/reset-password');
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      subscription.unsubscribe();
+      linkingSub.remove();
+    };
   }, [envInitialized]);
 
   useEffect(() => {
     console.log('NAVEGACIÓN - Sesión:', !!session, 'Iniciado:', initialized, 'Pathname:', pathname);
     if (!initialized || !envInitialized) return;
 
-    const isAuthPage  = pathname.includes('login') || pathname.includes('register');
+    const isAuthPage = pathname.includes('login') || pathname.includes('register');
     const isResetPage = pathname.includes('reset-password');
 
-    // Si estamos en modo recuperación, limpiar el flag cuando ya estemos en la pantalla
-    // correcta y NO redirigir al dashboard aunque haya sesión.
     if (isPasswordRecovery.current) {
       if (isResetPage) {
-        isPasswordRecovery.current = false; // ya llegamos, limpiar
+        isPasswordRecovery.current = false;
       }
-      return; // nunca redirigir durante el flujo de recuperación
+      return;
     }
 
     if (!session && !isAuthPage && !isResetPage) {
-      // Sin sesión fuera de páginas públicas -> Forzar Login
       router.replace('/login');
     } else if (session && isAuthPage) {
-      // Sesión activa en login/register -> Ir a la App
       router.replace('/(tabs)');
     }
   }, [session, initialized, envInitialized, pathname]);
@@ -81,21 +110,20 @@ export default function RootLayout() {
     return null;
   }
 
-
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen 
-          name="groups/selection" 
-          options={{ 
+        <Stack.Screen
+          name="groups/selection"
+          options={{
             presentation: 'modal',
-            headerShown: false 
-          }} 
+            headerShown: false
+          }}
         />
         <Stack.Screen name="groups/create" options={{ title: 'Crear Grupo' }} />
-        <Stack.Screen name="groups/join"   options={{ title: 'Unirse al Grupo' }} />
+        <Stack.Screen name="groups/join" options={{ title: 'Unirse al Grupo' }} />
         <Stack.Screen
           name="simulation-panel"
           options={{
