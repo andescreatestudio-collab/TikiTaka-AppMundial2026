@@ -13,9 +13,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../src/lib/supabase';
 
-const DEADLINE = new Date('2026-06-11T19:00:00Z');
-
 export default function PuntuacionScreen() {
+  const [deadline, setDeadline] = useState<Date | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [teams, setTeams] = useState<any[]>([]);
@@ -29,7 +28,7 @@ export default function PuntuacionScreen() {
     semi3_team_id: null,
     semi4_team_id: null,
   });
-  const [isLocked, setIsLocked] = useState(false);
+  const [isLocked, setIsLocked] = useState(true);
   const [timeLeft, setTimeLeft] = useState('');
   
   // Modal state
@@ -37,8 +36,12 @@ export default function PuntuacionScreen() {
   const [selectingKey, setSelectingKey] = useState<string | null>(null);
 
   const updateCountdown = useCallback(() => {
+    if (!deadline) {
+      setIsLocked(true);
+      return;
+    }
     const now = new Date();
-    const diff = DEADLINE.getTime() - now.getTime();
+    const diff = deadline.getTime() - now.getTime();
     
     if (diff <= 0) {
       setTimeLeft('CERRADO');
@@ -52,11 +55,20 @@ export default function PuntuacionScreen() {
       setTimeLeft(`${days}d ${pad(hours)}h ${pad(minutes)}m ${pad(seconds)}s`);
       setIsLocked(false);
     }
-  }, []);
+  }, [deadline]);
 
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
+
+      const { data: deadlineData } = await supabase
+        .from('app_config')
+        .select('value')
+        .eq('key', 'picks_deadline')
+        .single();
+
+      setDeadline(deadlineData?.value ? new Date(deadlineData.value) : new Date('2026-06-11T19:00:00Z'));
+
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
       setUserId(user.id);
