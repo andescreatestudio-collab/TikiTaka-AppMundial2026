@@ -161,15 +161,6 @@ export default function LeaderboardScreen() {
     fetchData();
   };
 
-  const getInitials = (username: string) => {
-    const target = username || 'U';
-    const parts = target.trim().split(/\s+/);
-    if (parts.length >= 2) {
-      return (parts[0][0] + parts[1][0]).toUpperCase();
-    }
-    return target.substring(0, 2).toUpperCase();
-  };
-
   const renderItem = ({ item, index }: { item: LeaderboardRow; index: number }) => {
     const isMe = item.user_id === userId;
     const isTopThree = index < 3;
@@ -177,24 +168,34 @@ export default function LeaderboardScreen() {
     const rankDisplay = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}`;
 
     return (
-      <View style={[styles.row, isMe && styles.myRow]}>
-        <Text style={[styles.rank, { color: rankColor }]}>{rankDisplay}</Text>
-        
-        <View style={[styles.avatar, isMe && styles.myAvatar]}>
-          <Text style={[styles.avatarText, isMe && styles.myAvatarText]}>{getInitials(item.username)}</Text>
+      <View style={[styles.card, isMe && styles.myCard]}>
+        {/* Fila 1: Posicion + Username + Puntos */}
+        <View style={styles.rowTop}>
+          <View style={styles.userSection}>
+            <Text style={[styles.rankText, { color: rankColor }]}>{rankDisplay}</Text>
+            <Text style={[styles.usernameText, isMe && styles.myUsernameText]} numberOfLines={1}>
+              {item.username}{isMe ? ' (tú)' : ''}
+            </Text>
+          </View>
+          <Text style={[styles.pointsText, isMe && styles.myPointsText]}>{item.total_points} PTS</Text>
         </View>
 
-        <View style={styles.userInfoCol}>
-          <Text style={[styles.username, isMe && styles.myText]} numberOfLines={1}>
-            {item.username} {isMe ? ' (tú)' : ''}
-          </Text>
-          <Text style={styles.statsSubRow}>
-            🎯 Exactos: {item.exactos}  ✅ Ganadores: {item.ganadores}  ❌ Perdidos: {item.perdidos}
-          </Text>
-        </View>
+        {/* Separador */}
+        <View style={styles.cardDivider} />
 
-        <View style={styles.pointsCol}>
-          <Text style={styles.points}>{item.total_points} pts</Text>
+        {/* Fila 2: Stats (3 columnas separadas por lineas verticales) */}
+        <View style={styles.rowBottom}>
+          <View style={styles.statColumn}>
+            <Text style={styles.statTextGreen}>🎯 Exactos: {item.exactos}</Text>
+          </View>
+          <View style={styles.statVerticalDivider} />
+          <View style={styles.statColumn}>
+            <Text style={styles.statTextBlue}>✅ Ganados: {item.ganadores}</Text>
+          </View>
+          <View style={styles.statVerticalDivider} />
+          <View style={styles.statColumn}>
+            <Text style={styles.statTextRed}>❌ Perdidos: {item.perdidos}</Text>
+          </View>
         </View>
       </View>
     );
@@ -303,80 +304,90 @@ const styles: any = StyleSheet.create({
   headerText: { color: '#666', fontSize: 11, fontWeight: '800', letterSpacing: 1 },
   flexLabel: { flex: 1 },
 
-  // Row
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  // Card
+  card: {
     backgroundColor: '#201f1f',
-    borderRadius: 6,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: '#3b4b37',
     paddingVertical: 12,
-    paddingHorizontal: 14,
-    marginBottom: 8,
+    paddingHorizontal: 16,
+    marginBottom: 10,
   },
-  myRow: {
+  myCard: {
     backgroundColor: '#1a2e1c',
     borderColor: '#00FF41',
   },
-  rank: {
-    width: 30,
+  rowTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingBottom: 8,
+  },
+  userSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    marginRight: 10,
+  },
+  rankText: {
     fontSize: 16,
     fontWeight: '900',
+    marginRight: 10,
     textAlign: 'center',
+    minWidth: 24,
   },
-  avatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#131313',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: '#3b4b37',
-    marginLeft: 12,
-    marginRight: 12,
-  },
-  myAvatar: {
-    borderColor: '#00FF41',
-  },
-  avatarText: {
-    color: '#b9ccb2',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  myAvatarText: {
-    color: '#00FF41',
-  },
-  username: {
+  usernameText: {
     color: '#fff',
     fontSize: 15,
     fontWeight: '600',
-    marginBottom: 2,
+    flexShrink: 1,
   },
-  myText: {
-    color: '#fff',
+  myUsernameText: {
     fontWeight: '800',
   },
-  userInfoCol: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  pointsCol: {
-    alignItems: 'flex-end',
-    justifyContent: 'center',
-    marginLeft: 8,
-  },
-  points: {
+  pointsText: {
     color: '#00FF41',
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '900',
-    textAlign: 'right',
   },
-  statsSubRow: {
-    color: '#b9ccb2',
-    fontSize: 10,
-    fontWeight: '500',
+  myPointsText: {
+    color: '#00FF41',
+  },
+  cardDivider: {
+    height: 1,
+    backgroundColor: '#3b4b37',
+    marginVertical: 4,
+  },
+  rowBottom: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingTop: 6,
+  },
+  statColumn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statVerticalDivider: {
+    width: 1,
+    height: 14,
+    backgroundColor: '#3b4b37',
+  },
+  statTextGreen: {
+    color: '#00FF41',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  statTextBlue: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  statTextRed: {
+    color: '#ff4b4b',
+    fontSize: 11,
+    fontWeight: '600',
   },
 
   // Empty state in list
