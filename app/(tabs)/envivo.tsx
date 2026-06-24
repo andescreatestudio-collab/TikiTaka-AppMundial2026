@@ -43,12 +43,15 @@ const getTodayLocalRange = () => {
 
 const LOCK_MINUTES = 15;
 
+const LIVE_STATUSES = ['1H','2H','HT','ET','in_play'];
+const FINISHED_STATUSES = ['FT','AET','PEN','finished'];
+
 const getMatchState = (match: any) => {
   const now = new Date();
   const kickoff = new Date(match.kickoff_utc);
   const minutesUntilKickoff = (kickoff.getTime() - now.getTime()) / 60000;
-  const isFinished = ['FT', 'AET', 'PEN', 'finished'].includes(match.status);
-  const isLive = !isFinished && minutesUntilKickoff <= 0;
+  const isFinished = FINISHED_STATUSES.includes(match.status);
+  const isLive = LIVE_STATUSES.includes(match.status) || (!isFinished && minutesUntilKickoff <= 0);
   const isExpanded = isFinished || isLive || minutesUntilKickoff <= LOCK_MINUTES;
 
   return { isFinished, isLive, isExpanded, minutesUntilKickoff };
