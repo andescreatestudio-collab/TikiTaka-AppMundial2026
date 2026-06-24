@@ -189,7 +189,6 @@ export default function EnVivoScreen() {
             .from('predictions')
             .select('match_id, user_id, home_score_pred, away_score_pred, points_earned')
             .in('match_id', matchIds)
-            .eq('group_id', groupId)
         ]);
 
         if (membersRes.error) throw membersRes.error;
