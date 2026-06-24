@@ -669,14 +669,14 @@ const styles = StyleSheet.create({
 
   // Live Card specific
   liveCard: {
-    borderColor: '#ff4b4b',
+    borderColor: '#00FF41',
   },
   liveBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 75, 75, 0.1)',
+    backgroundColor: 'rgba(0, 255, 65, 0.1)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 75, 75, 0.3)',
+    borderColor: 'rgba(0, 255, 65, 0.3)',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 4,
@@ -686,10 +686,10 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#ff4b4b',
+    backgroundColor: '#00FF41',
   },
   liveBadgeText: {
-    color: '#ff4b4b',
+    color: '#00FF41',
     fontSize: 10,
     fontWeight: '900',
     letterSpacing: 1,
