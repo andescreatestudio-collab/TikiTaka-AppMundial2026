@@ -57,6 +57,15 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="envivo"
+        options={{
+          title: 'En Vivo',
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? 'radio' : 'radio-outline'} size={24} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="leaderboard"
         options={{
           title: 'Posiciones',
