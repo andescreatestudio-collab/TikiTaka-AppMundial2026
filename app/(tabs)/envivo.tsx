@@ -36,10 +36,10 @@ const getFlagUrl = (code: string | undefined): string | null => {
   return iso2 ? `https://flagcdn.com/w160/${iso2}.png` : null;
 };
 
-const getTodayUTCRange = () => {
+const getTodayLocalRange = () => {
   const now = new Date();
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
-  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
   return { start: start.toISOString(), end: end.toISOString() };
 };
 
@@ -51,9 +51,7 @@ export default function EnVivoScreen() {
   
   // Data States
   const [todayMatches, setTodayMatches] = useState<any[]>([]);
-  const [activeMatch, setActiveMatch] = useState<any | null>(null);
   const [nextMatch, setNextMatch] = useState<any | null>(null);
-  const [finishedMatch, setFinishedMatch] = useState<any | null>(null);
   const [groupPredictions, setGroupPredictions] = useState<any[]>([]);
   const [groupMembers, setGroupMembers] = useState<any[]>([]);
   const [hasError, setHasError] = useState(false);
@@ -157,7 +155,7 @@ export default function EnVivoScreen() {
       }
 
       // 2. Consultar partidos de hoy
-      const { start, end } = getTodayUTCRange();
+      const { start, end } = getTodayLocalRange();
       const { data: matches, error: matchesError } = await supabase
         .from('matches')
         .select(`
@@ -177,44 +175,32 @@ export default function EnVivoScreen() {
 
       // 3. Determinar estados de partidos
       const currentNowStr = new Date().toISOString();
-
-      // Partido Activo (En vivo)
-      const active = matchesList.find(m =>
-        m.kickoff_utc <= currentNowStr && !['FT', 'AET', 'PEN', 'finished'].includes(m.status)
-      );
-
-      // Partido Próximo hoy
       const next = matchesList.find(m => m.kickoff_utc > currentNowStr);
-
-      // Último partido finalizado hoy (para fallback si no hay activo ni próximo)
-      const finished = [...matchesList].reverse().find(m =>
-        ['FT', 'AET', 'PEN', 'finished'].includes(m.status)
-      );
-
-      setActiveMatch(active || null);
       setNextMatch(next || null);
-      setFinishedMatch(finished || null);
 
-      // 4. Si hay partido activo o finalizado a mostrar, cargar predicciones y miembros
-      const targetMatch = active || finished;
-      if (targetMatch) {
-        const [predsRes, membersRes] = await Promise.all([
-          supabase
-            .from('predictions')
-            .select('user_id, home_score_pred, away_score_pred, points_earned')
-            .eq('match_id', targetMatch.id)
-            .eq('group_id', groupId),
+      // 4. Cargar miembros del grupo y todas las predicciones de hoy con username
+      if (groupId && matchesList.length > 0) {
+        const matchIds = matchesList.map(m => m.id);
+        const [membersRes, predsRes] = await Promise.all([
           supabase
             .from('group_members')
             .select('user_id, users(username)')
+            .eq('group_id', groupId),
+          supabase
+            .from('predictions')
+            .select('match_id, user_id, home_score_pred, away_score_pred, points_earned, users(username)')
+            .in('match_id', matchIds)
             .eq('group_id', groupId)
         ]);
 
-        if (predsRes.error) throw predsRes.error;
         if (membersRes.error) throw membersRes.error;
+        if (predsRes.error) throw predsRes.error;
 
-        setGroupPredictions(predsRes.data || []);
         setGroupMembers(membersRes.data || []);
+        setGroupPredictions(predsRes.data || []);
+      } else {
+        setGroupMembers([]);
+        setGroupPredictions([]);
       }
 
     } catch (error) {
@@ -274,167 +260,75 @@ export default function EnVivoScreen() {
   }
 
   // Lógica de Renderizado
-  const displayMatch = activeMatch || finishedMatch;
-  const isLive = !!activeMatch;
+  const renderFinishedMatch = (match: any) => {
+    const homeFlag = getFlagUrl(match.home_team?.code);
+    const awayFlag = getFlagUrl(match.away_team?.code);
+
+    // Filter predictions for this match
+    const preds = groupPredictions.filter(p => p.match_id === match.id);
+    
+    // Categorize
+    const exactos = preds.filter(p => p.points_earned === 3);
+    const ganadores = preds.filter(p => p.points_earned === 1);
+    const perdidos = preds.filter(p => p.points_earned === 0);
+
+    const renderUserList = (list: any[]) => {
+      if (list.length === 0) return '—';
+      return list.map(p => p.users?.username || 'Usuario').join(', ');
+    };
+
+    return (
+      <View key={match.id} style={styles.finishedMatchCard}>
+        {/* Match Header */}
+        <View style={styles.finishedMatchHeader}>
+          <View style={styles.finishedTeamsRow}>
+            {homeFlag && <Image source={{ uri: homeFlag }} style={styles.miniFlag} resizeMode="contain" />}
+            <Text style={styles.finishedTeamCode}>{match.home_team?.code}</Text>
+            <Text style={styles.finishedScoreText}>{match.home_score ?? 0} - {match.away_score ?? 0}</Text>
+            <Text style={styles.finishedTeamCode}>{match.away_team?.code}</Text>
+            {awayFlag && <Image source={{ uri: awayFlag }} style={styles.miniFlag} resizeMode="contain" />}
+          </View>
+          <View style={styles.miniFinishedBadge}>
+            <Text style={styles.miniFinishedBadgeText}>FINALIZADO</Text>
+          </View>
+        </View>
+
+        {/* Stats Row */}
+        <View style={styles.finishedStatsContainer}>
+          <View style={styles.statCategoryRow}>
+            <Text style={styles.statEmoji}>🎯</Text>
+            <Text style={styles.statNamesGreen}>{renderUserList(exactos)}</Text>
+          </View>
+          <View style={styles.statCategoryRow}>
+            <Text style={styles.statEmoji}>✅</Text>
+            <Text style={styles.statNamesBlue}>{renderUserList(ganadores)}</Text>
+          </View>
+          <View style={styles.statCategoryRow}>
+            <Text style={styles.statEmoji}>❌</Text>
+            <Text style={styles.statNamesRed}>{renderUserList(perdidos)}</Text>
+          </View>
+        </View>
+      </View>
+    );
+  };
 
   const renderContent = () => {
-    if (displayMatch) {
-      // ─── CASO 1: HAY PARTIDO ACTIVO O FINALIZADO A MOSTRAR ───
-      const homeFlag = getFlagUrl(displayMatch.home_team?.code);
-      const awayFlag = getFlagUrl(displayMatch.away_team?.code);
+    const currentNowStr = now.toISOString();
+    
+    // Filter today's matches
+    const activeMatches = todayMatches.filter(m =>
+      m.kickoff_utc <= currentNowStr && !['FT', 'AET', 'PEN', 'finished'].includes(m.status)
+    );
+    const finishedMatches = todayMatches.filter(m =>
+      ['FT', 'AET', 'PEN', 'finished'].includes(m.status)
+    );
+    
+    const hasActive = activeMatches.length > 0;
+    const hasFinished = finishedMatches.length > 0;
+    const hasUpcoming = todayMatches.some(m => m.kickoff_utc > currentNowStr);
 
-      // Obtener predicción del usuario actual
-      const myPred = groupPredictions.find(p => p.user_id === userId);
-
-      // Obtener predicciones de otros miembros
-      const otherMembers = groupMembers.filter(m => m.user_id !== userId);
-
-      return (
-        <ScrollView
-          contentContainerStyle={styles.scroll}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00FF41" />}
-        >
-          {/* Card de Partido Activo / Reciente */}
-          <View style={styles.liveCard}>
-            {/* Header del card */}
-            <View style={styles.cardHeader}>
-              <Text style={styles.roundText}>
-                {displayMatch.round === 'group' ? `GRUPO ${displayMatch.group_name || ''}` : displayMatch.round.toUpperCase()}
-              </Text>
-              <Text style={styles.separatorDot}>•</Text>
-              <Text style={styles.metaText}>FASE DE GRUPOS</Text>
-            </View>
-
-            {/* Scoreboard Principal */}
-            <View style={styles.scoreboardRow}>
-              {/* Equipo Local */}
-              <View style={styles.teamColumn}>
-                {homeFlag ? (
-                  <Image source={{ uri: homeFlag }} style={styles.flag} resizeMode="contain" />
-                ) : (
-                  <Text style={styles.flagPlaceholder}>🏳️</Text>
-                )}
-                <Text style={styles.teamName}>{displayMatch.home_team?.name}</Text>
-                <Text style={styles.teamCode}>{displayMatch.home_team?.code}</Text>
-              </View>
-
-              {/* Marcador */}
-              <View style={styles.scoreColumn}>
-                <View style={styles.scoreNumbers}>
-                  <Text style={styles.scoreText}>{displayMatch.home_score ?? 0}</Text>
-                  <Text style={styles.dash}>-</Text>
-                  <Text style={styles.scoreText}>{displayMatch.away_score ?? 0}</Text>
-                </View>
-                {/* Desempate por penales si aplica */}
-                {(displayMatch.home_penalties !== null || displayMatch.away_penalties !== null) && (
-                  <Text style={styles.penaltiesText}>
-                    ({displayMatch.home_penalties ?? 0} - {displayMatch.away_penalties ?? 0} pen.)
-                  </Text>
-                )}
-              </View>
-
-              {/* Equipo Visitante */}
-              <View style={styles.teamColumn}>
-                {awayFlag ? (
-                  <Image source={{ uri: awayFlag }} style={styles.flag} resizeMode="contain" />
-                ) : (
-                  <Text style={styles.flagPlaceholder}>🏳️</Text>
-                )}
-                <Text style={styles.teamName}>{displayMatch.away_team?.name}</Text>
-                <Text style={styles.teamCode}>{displayMatch.away_team?.code}</Text>
-              </View>
-            </View>
-
-            {/* Badge de Estado del Partido */}
-            <View style={styles.badgeWrapper}>
-              {isLive ? (
-                <View style={styles.liveBadgeContainer}>
-                  <Animated.View style={[styles.liveDot, { opacity: pulseAnim }]} />
-                  <Text style={styles.liveBadgeText}>EN VIVO</Text>
-                </View>
-              ) : (
-                <View style={styles.finishedBadgeContainer}>
-                  <Text style={styles.finishedBadgeText}>FINALIZADO</Text>
-                </View>
-              )}
-            </View>
-
-            {/* SECCIÓN: TU PREDICCIÓN */}
-            <View style={styles.divider} />
-            <View style={styles.myPredictionSection}>
-              <Text style={styles.sectionTitle}>TU PREDICCIÓN</Text>
-              {myPred ? (
-                <View style={styles.myPredRow}>
-                  <Text style={styles.myPredText}>
-                    {displayMatch.home_team?.name}  {myPred.home_score_pred}  -  {myPred.away_score_pred}  {displayMatch.away_team?.name}
-                  </Text>
-                  {myPred.points_earned !== null && myPred.points_earned > 0 && (
-                    <Text style={styles.pointsBadge}>+{myPred.points_earned} PTS</Text>
-                  )}
-                </View>
-              ) : (
-                <Text style={styles.noPredText}>Sin predicción</Text>
-              )}
-            </View>
-
-            {/* SECCIÓN: PICKS DEL GRUPO */}
-            <View style={styles.divider} />
-            <View style={styles.groupPicksSection}>
-              <Text style={styles.sectionTitle}>PICKS DEL GRUPO</Text>
-              {otherMembers.length === 0 ? (
-                <Text style={styles.emptyPicksText}>No hay otros miembros en este grupo.</Text>
-              ) : (
-                otherMembers.map(member => {
-                  const mPred = groupPredictions.find(p => p.user_id === member.user_id);
-                  const username = member.users?.username || 'Jugador';
-                  
-                  return (
-                    <View key={member.user_id} style={styles.memberPickRow}>
-                      <Text style={styles.memberName}>{username}</Text>
-                      <Ionicons name="arrow-forward-outline" size={14} color="#666" style={{ marginHorizontal: 8 }} />
-                      <Text style={[styles.memberScore, !mPred && styles.noMemberPred]}>
-                        {mPred ? `${mPred.home_score_pred} - ${mPred.away_score_pred}` : '—'}
-                      </Text>
-                    </View>
-                  );
-                })
-              )}
-            </View>
-          </View>
-        </ScrollView>
-      );
-    } else if (nextMatch) {
-      // ─── CASO 2: NO HAY ACTIVO PERO HAY UNO PRÓXIMO HOY ───
-      const homeFlag = getFlagUrl(nextMatch.home_team?.code);
-      const awayFlag = getFlagUrl(nextMatch.away_team?.code);
-
-      const nextKickoffLocal = new Date(nextMatch.kickoff_utc).toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit'
-      });
-
-      return (
-        <ScrollView
-          contentContainerStyle={[styles.scroll, styles.centeredContent]}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00FF41" />}
-        >
-          <View style={styles.countdownCard}>
-            <Ionicons name="hourglass-outline" size={54} color="#00FF41" style={{ marginBottom: 12 }} />
-            <Text style={styles.countdownTitle}>PRÓXIMO PARTIDO HOY</Text>
-            
-            <View style={styles.nextMatchTeamsRow}>
-              <Text style={styles.nextMatchTeamCode}>{nextMatch.home_team?.code}</Text>
-              <Text style={styles.nextMatchVs}>vs</Text>
-              <Text style={styles.nextMatchTeamCode}>{nextMatch.away_team?.code}</Text>
-            </View>
-
-            <Text style={styles.countdownTime}>{countdownStr}</Text>
-            <Text style={styles.countdownSub}>El partido inicia a las {nextKickoffLocal} (Hora Local)</Text>
-          </View>
-        </ScrollView>
-      );
-    } else {
-      // ─── CASO 3: SIN PARTIDOS HOY ───
+    if (!hasActive && !hasFinished && !hasUpcoming) {
+      // Caso 3: Sin partidos hoy
       return (
         <ScrollView
           contentContainerStyle={[styles.scroll, styles.centeredContent]}
@@ -448,6 +342,151 @@ export default function EnVivoScreen() {
         </ScrollView>
       );
     }
+
+    return (
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00FF41" />}
+      >
+        {/* ARRIBA: Partidos activos EN VIVO */}
+        {hasActive && (
+          <View style={styles.activeSection}>
+            {activeMatches.map(match => {
+              const homeFlag = getFlagUrl(match.home_team?.code);
+              const awayFlag = getFlagUrl(match.away_team?.code);
+              const myPred = groupPredictions.find(p => p.match_id === match.id && p.user_id === userId);
+              const otherMembers = groupMembers.filter(m => m.user_id !== userId);
+
+              return (
+                <View key={match.id} style={[styles.liveCard, { marginBottom: 16 }]}>
+                  {/* Header del card */}
+                  <View style={styles.cardHeader}>
+                    <Text style={styles.roundText}>
+                      {match.round === 'group' ? `GRUPO ${match.group_name || ''}` : match.round.toUpperCase()}
+                    </Text>
+                    <Text style={styles.separatorDot}>•</Text>
+                    <Text style={styles.metaText}>EN VIVO</Text>
+                  </View>
+
+                  {/* Scoreboard Principal */}
+                  <View style={styles.scoreboardRow}>
+                    <View style={styles.teamColumn}>
+                      {homeFlag ? (
+                        <Image source={{ uri: homeFlag }} style={styles.flag} resizeMode="contain" />
+                      ) : (
+                        <Text style={styles.flagPlaceholder}>🏳️</Text>
+                      )}
+                      <Text style={styles.teamName}>{match.home_team?.name}</Text>
+                      <Text style={styles.teamCode}>{match.home_team?.code}</Text>
+                    </View>
+
+                    <View style={styles.scoreColumn}>
+                      <View style={styles.scoreNumbers}>
+                        <Text style={styles.scoreText}>{match.home_score ?? 0}</Text>
+                        <Text style={styles.dash}>-</Text>
+                        <Text style={styles.scoreText}>{match.away_score ?? 0}</Text>
+                      </View>
+                      {(match.home_penalties !== null || match.away_penalties !== null) && (
+                        <Text style={styles.penaltiesText}>
+                          ({match.home_penalties ?? 0} - {match.away_penalties ?? 0} pen.)
+                        </Text>
+                      )}
+                    </View>
+
+                    <View style={styles.teamColumn}>
+                      {awayFlag ? (
+                        <Image source={{ uri: awayFlag }} style={styles.flag} resizeMode="contain" />
+                      ) : (
+                        <Text style={styles.flagPlaceholder}>🏳️</Text>
+                      )}
+                      <Text style={styles.teamName}>{match.away_team?.name}</Text>
+                      <Text style={styles.teamCode}>{match.away_team?.code}</Text>
+                    </View>
+                  </View>
+
+                  {/* Badge de Estado */}
+                  <View style={styles.badgeWrapper}>
+                    <View style={styles.liveBadgeContainer}>
+                      <Animated.View style={[styles.liveDot, { opacity: pulseAnim }]} />
+                      <Text style={styles.liveBadgeText}>EN VIVO</Text>
+                    </View>
+                  </View>
+
+                  {/* TU PREDICCIÓN */}
+                  <View style={styles.divider} />
+                  <View style={styles.myPredictionSection}>
+                    <Text style={styles.sectionTitle}>TU PREDICCIÓN</Text>
+                    {myPred ? (
+                      <View style={styles.myPredRow}>
+                        <Text style={styles.myPredText}>
+                          {match.home_team?.name}  {myPred.home_score_pred}  -  {myPred.away_score_pred}  {match.away_team?.name}
+                        </Text>
+                        {myPred.points_earned !== null && myPred.points_earned > 0 && (
+                          <Text style={styles.pointsBadge}>+{myPred.points_earned} PTS</Text>
+                        )}
+                      </View>
+                    ) : (
+                      <Text style={styles.noPredText}>Sin predicción</Text>
+                    )}
+                  </View>
+
+                  {/* PICKS DEL GRUPO */}
+                  <View style={styles.divider} />
+                  <View style={styles.groupPicksSection}>
+                    <Text style={styles.sectionTitle}>PICKS DEL GRUPO</Text>
+                    {otherMembers.length === 0 ? (
+                      <Text style={styles.emptyPicksText}>No hay otros miembros en este grupo.</Text>
+                    ) : (
+                      otherMembers.map(member => {
+                        const mPred = groupPredictions.find(p => p.match_id === match.id && p.user_id === member.user_id);
+                        const username = member.users?.username || 'Jugador';
+                        
+                        return (
+                          <View key={member.user_id} style={styles.memberPickRow}>
+                            <Text style={styles.memberName}>{username}</Text>
+                            <Ionicons name="arrow-forward-outline" size={14} color="#666" style={{ marginHorizontal: 8 }} />
+                            <Text style={[styles.memberScore, !mPred && styles.noMemberPred]}>
+                              {mPred ? `${mPred.home_score_pred} - ${mPred.away_score_pred}` : '—'}
+                            </Text>
+                          </View>
+                        );
+                      })
+                    )}
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
+        {/* SI NO HAY PARTIDOS ACTIVOS: Mostramos el contador del próximo partido de hoy */}
+        {!hasActive && nextMatch && (
+          <View style={styles.countdownCard}>
+            <Ionicons name="hourglass-outline" size={54} color="#00FF41" style={{ marginBottom: 12 }} />
+            <Text style={styles.countdownTitle}>PRÓXIMO PARTIDO HOY</Text>
+            
+            <View style={styles.nextMatchTeamsRow}>
+              <Text style={styles.nextMatchTeamCode}>{nextMatch.home_team?.code}</Text>
+              <Text style={styles.nextMatchVs}>vs</Text>
+              <Text style={styles.nextMatchTeamCode}>{nextMatch.away_team?.code}</Text>
+            </View>
+
+            <Text style={styles.countdownTime}>{countdownStr}</Text>
+            <Text style={styles.countdownSub}>
+              El partido inicia a las {new Date(nextMatch.kickoff_utc).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (Hora Local)
+            </Text>
+          </View>
+        )}
+
+        {/* ABAJO: Lista de partidos finalizados del día */}
+        {hasFinished && (
+          <View style={styles.finishedSection}>
+            <Text style={styles.finishedHeaderTitle}>PARTIDOS DE HOY</Text>
+            {finishedMatches.map(renderFinishedMatch)}
+          </View>
+        )}
+      </ScrollView>
+    );
   };
 
   return (
@@ -813,5 +852,99 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingHorizontal: 30,
     lineHeight: 20,
+  },
+  activeSection: {
+    marginBottom: 16,
+  },
+  finishedSection: {
+    marginTop: 24,
+  },
+  finishedHeaderTitle: {
+    color: '#00FF41',
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+    marginBottom: 16,
+    textTransform: 'uppercase',
+  },
+  finishedMatchCard: {
+    backgroundColor: '#201f1f',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#3b4b37',
+    padding: 16,
+    marginBottom: 12,
+  },
+  finishedMatchHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2a2a2a',
+    paddingBottom: 8,
+  },
+  finishedTeamsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  miniFlag: {
+    width: 24,
+    height: 16,
+    borderRadius: 2,
+  },
+  finishedTeamCode: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  finishedScoreText: {
+    color: '#00FF41',
+    fontSize: 16,
+    fontWeight: '900',
+    marginHorizontal: 4,
+  },
+  miniFinishedBadge: {
+    backgroundColor: '#393939',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 3,
+  },
+  miniFinishedBadgeText: {
+    color: '#b9ccb2',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  finishedStatsContainer: {
+    gap: 6,
+  },
+  statCategoryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  statEmoji: {
+    fontSize: 14,
+    width: 20,
+    textAlign: 'center',
+  },
+  statNamesGreen: {
+    color: '#00FF41',
+    fontSize: 13,
+    fontWeight: '600',
+    flex: 1,
+  },
+  statNamesBlue: {
+    color: '#38bdf8',
+    fontSize: 13,
+    fontWeight: '600',
+    flex: 1,
+  },
+  statNamesRed: {
+    color: '#ff4b4b',
+    fontSize: 13,
+    fontWeight: '600',
+    flex: 1,
   },
 });
