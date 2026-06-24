@@ -178,26 +178,32 @@ export default function EnVivoScreen() {
       const next = matchesList.find(m => m.kickoff_utc > currentNowStr);
       setNextMatch(next || null);
 
-      // 4. Cargar miembros del grupo y todas las predicciones de hoy con username
+      // 4. Cargar miembros del grupo y predicciones por match.id individualmente
       if (groupId && matchesList.length > 0) {
-        const matchIds = matchesList.map(m => m.id);
-        const [membersRes, predsRes] = await Promise.all([
-          supabase
-            .from('group_members')
-            .select('user_id, users(username)')
-            .eq('group_id', groupId),
-          supabase
-            .from('predictions')
-            .select('match_id, user_id, home_score_pred, away_score_pred, points_earned, users(username)')
-            .in('match_id', matchIds)
-            .eq('group_id', groupId)
-        ]);
+        const membersRes = await supabase
+          .from('group_members')
+          .select('user_id, users(username)')
+          .eq('group_id', groupId);
 
         if (membersRes.error) throw membersRes.error;
-        if (predsRes.error) throw predsRes.error;
-
         setGroupMembers(membersRes.data || []);
-        setGroupPredictions(predsRes.data || []);
+
+        const predsPromises = matchesList.map(async (m) => {
+          const { data, error } = await supabase
+            .from('predictions')
+            .select('match_id, user_id, home_score_pred, away_score_pred, points_earned, users(username)')
+            .eq('match_id', m.id)
+            .eq('group_id', groupId);
+          
+          if (error) {
+            console.error(`Error fetching predictions for match ${m.id}:`, error);
+            throw error;
+          }
+          return data || [];
+        });
+
+        const allPreds = await Promise.all(predsPromises);
+        setGroupPredictions(allPreds.flat());
       } else {
         setGroupMembers([]);
         setGroupPredictions([]);
