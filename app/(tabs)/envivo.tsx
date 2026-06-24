@@ -9,13 +9,11 @@ import {
   Image,
   TouchableOpacity,
   RefreshControl,
-  Dimensions,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../../src/lib/supabase';
-
-const { width: SW } = Dimensions.get('window');
 
 const TEAM_TO_ISO2: Record<string, string> = {
   ARG: 'ar', MEX: 'mx', USA: 'us', CAN: 'ca', BRA: 'br',
@@ -43,6 +41,32 @@ const getTodayLocalRange = () => {
   return { start: start.toISOString(), end: end.toISOString() };
 };
 
+const LOCK_MINUTES = 15;
+
+const getMatchState = (match: any) => {
+  const now = new Date();
+  const kickoff = new Date(match.kickoff_utc);
+  const minutesUntilKickoff = (kickoff.getTime() - now.getTime()) / 60000;
+  const isFinished = ['FT', 'AET', 'PEN', 'finished'].includes(match.status);
+  const isLive = !isFinished && minutesUntilKickoff <= 0;
+  const isExpanded = isFinished || isLive || minutesUntilKickoff <= LOCK_MINUTES;
+
+  return { isFinished, isLive, isExpanded, minutesUntilKickoff };
+};
+
+const formatRemainingTime = (minutes: number) => {
+  if (minutes <= 0) return '00:00';
+  const hrs = Math.floor(minutes / 60);
+  const mins = Math.floor(minutes % 60);
+  const pad = (num: number) => num.toString().padStart(2, '0');
+  return `${pad(hrs)}:${pad(mins)}`;
+};
+
+const formatKickoffTime = (kickoffUtc: string) => {
+  const d = new Date(kickoffUtc);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+};
+
 export default function EnVivoScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -51,14 +75,12 @@ export default function EnVivoScreen() {
   
   // Data States
   const [todayMatches, setTodayMatches] = useState<any[]>([]);
-  const [nextMatch, setNextMatch] = useState<any | null>(null);
-  const [groupPredictions, setGroupPredictions] = useState<any[]>([]);
+  const [allPredictions, setAllPredictions] = useState<any[]>([]);
   const [groupMembers, setGroupMembers] = useState<any[]>([]);
   const [hasError, setHasError] = useState(false);
 
-  // Time/Countdown State
+  // Time ticker state (causes runtime state to update dynamically)
   const [now, setNow] = useState(new Date());
-  const [countdownStr, setCountdownStr] = useState('00:00:00');
 
   // Animations
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -83,31 +105,13 @@ export default function EnVivoScreen() {
     return () => animation.stop();
   }, [pulseAnim]);
 
-  // Tick countdown and time-based filter triggers
+  // Tick time every 10 seconds (reduces re-render overhead but stays accurate)
   useEffect(() => {
     const timer = setInterval(() => {
       setNow(new Date());
-    }, 1000);
+    }, 10000);
     return () => clearInterval(timer);
   }, []);
-
-  // Update countdown string when nextMatch or now changes
-  useEffect(() => {
-    if (nextMatch) {
-      const diff = new Date(nextMatch.kickoff_utc).getTime() - now.getTime();
-      if (diff <= 0) {
-        setCountdownStr('00:00:00');
-        // Trigger fetch when countdown finishes to refresh the status
-        fetchData(true);
-      } else {
-        const hours = Math.floor(diff / (1000 * 60 * 60));
-        const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-        const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-        const pad = (num: number) => num.toString().padStart(2, '0');
-        setCountdownStr(`${pad(hours)}:${pad(minutes)}:${pad(seconds)}`);
-      }
-    }
-  }, [nextMatch, now]);
 
   // Main Fetch function
   const fetchData = useCallback(async (silent = false) => {
@@ -154,7 +158,7 @@ export default function EnVivoScreen() {
         return;
       }
 
-      // 2. Consultar partidos de hoy
+      // 2. Consultar todos los partidos de hoy
       const { start, end } = getTodayLocalRange();
       const { data: matches, error: matchesError } = await supabase
         .from('matches')
@@ -173,40 +177,29 @@ export default function EnVivoScreen() {
       const matchesList = matches || [];
       setTodayMatches(matchesList);
 
-      // 3. Determinar estados de partidos
-      const currentNowStr = new Date().toISOString();
-      const next = matchesList.find(m => m.kickoff_utc > currentNowStr);
-      setNextMatch(next || null);
-
-      // 4. Cargar miembros del grupo y predicciones por match.id individualmente
+      // 3. Cargar miembros y predicciones en bloque si hay partidos hoy
       if (groupId && matchesList.length > 0) {
-        const membersRes = await supabase
-          .from('group_members')
-          .select('user_id, users(username)')
-          .eq('group_id', groupId);
+        const matchIds = matchesList.map(m => m.id);
+        const [membersRes, predsRes] = await Promise.all([
+          supabase
+            .from('group_members')
+            .select('user_id, users(username)')
+            .eq('group_id', groupId),
+          supabase
+            .from('predictions')
+            .select('match_id, user_id, home_score_pred, away_score_pred, points_earned')
+            .in('match_id', matchIds)
+            .eq('group_id', groupId)
+        ]);
 
         if (membersRes.error) throw membersRes.error;
+        if (predsRes.error) throw predsRes.error;
+
         setGroupMembers(membersRes.data || []);
-
-        const predsPromises = matchesList.map(async (m) => {
-          const { data, error } = await supabase
-            .from('predictions')
-            .select('match_id, user_id, home_score_pred, away_score_pred, points_earned, users(username)')
-            .eq('match_id', m.id)
-            .eq('group_id', groupId);
-          
-          if (error) {
-            console.error(`Error fetching predictions for match ${m.id}:`, error);
-            throw error;
-          }
-          return data || [];
-        });
-
-        const allPreds = await Promise.all(predsPromises);
-        setGroupPredictions(allPreds.flat());
+        setAllPredictions(predsRes.data || []);
       } else {
         setGroupMembers([]);
-        setGroupPredictions([]);
+        setAllPredictions([]);
       }
 
     } catch (error) {
@@ -234,6 +227,245 @@ export default function EnVivoScreen() {
   const onRefresh = () => {
     setRefreshing(true);
     fetchData(true);
+  };
+
+  const getUsername = (uid: string) => {
+    const mem = groupMembers.find(x => x.user_id === uid);
+    const name = mem?.users?.username || 'Usuario';
+    return uid === userId ? `${name} (tú)` : name;
+  };
+
+  const renderMatchCard = (match: any) => {
+    const { isFinished, isLive, isExpanded, minutesUntilKickoff } = getMatchState(match);
+    const homeFlag = getFlagUrl(match.home_team?.code);
+    const awayFlag = getFlagUrl(match.away_team?.code);
+    
+    // User's own prediction
+    const myPred = allPredictions.find(p => p.match_id === match.id && p.user_id === userId);
+    
+    // Other members
+    const otherMembers = groupMembers.filter(m => m.user_id !== userId);
+    
+    // Match predictions list
+    const matchPreds = allPredictions.filter(p => p.match_id === match.id);
+
+    // Collapsed Mode
+    if (!isExpanded) {
+      return (
+        <View key={match.id} style={styles.collapsedCard}>
+          <Text style={styles.collapsedTime}>{formatKickoffTime(match.kickoff_utc)}</Text>
+          <View style={styles.collapsedTeamsRow}>
+            {homeFlag && <Image source={{ uri: homeFlag }} style={styles.miniFlag} resizeMode="contain" />}
+            <Text style={styles.collapsedTeamCode}>{match.home_team?.code}</Text>
+            <Text style={styles.collapsedVs}>vs</Text>
+            <Text style={styles.collapsedTeamCode}>{match.away_team?.code}</Text>
+            {awayFlag && <Image source={{ uri: awayFlag }} style={styles.miniFlag} resizeMode="contain" />}
+          </View>
+          <Text style={styles.collapsedCountdown}>⏳ {formatRemainingTime(minutesUntilKickoff)}</Text>
+        </View>
+      );
+    }
+
+    // Expanded Mode: Live
+    if (isLive) {
+      return (
+        <View key={match.id} style={[styles.liveCard, styles.expandedCard]}>
+          {/* Header */}
+          <View style={styles.cardHeader}>
+            <View style={styles.liveBadge}>
+              <Animated.View style={[styles.liveDot, { opacity: pulseAnim }]} />
+              <Text style={styles.liveBadgeText}>EN VIVO</Text>
+            </View>
+            <Text style={styles.roundText}>
+              {match.round === 'group' ? `GRUPO ${match.group_name || ''}` : match.round.toUpperCase()}
+            </Text>
+          </View>
+
+          {/* Scoreboard */}
+          <View style={styles.scoreboardRow}>
+            <View style={styles.teamColumn}>
+              {homeFlag ? (
+                <Image source={{ uri: homeFlag }} style={styles.flag} resizeMode="contain" />
+              ) : (
+                <Text style={styles.flagPlaceholder}>🏳️</Text>
+              )}
+              <Text style={styles.teamCodeBig}>{match.home_team?.code}</Text>
+            </View>
+
+            <View style={styles.scoreColumn}>
+              <View style={styles.scoreNumbers}>
+                <Text style={styles.scoreText}>{match.home_score ?? 0}</Text>
+                <Text style={styles.dash}>-</Text>
+                <Text style={styles.scoreText}>{match.away_score ?? 0}</Text>
+              </View>
+              {(match.home_penalties !== null || match.away_penalties !== null) && (
+                <Text style={styles.penaltiesText}>
+                  ({match.home_penalties ?? 0} - {match.away_penalties ?? 0} pen.)
+                </Text>
+              )}
+            </View>
+
+            <View style={styles.teamColumn}>
+              {awayFlag ? (
+                <Image source={{ uri: awayFlag }} style={styles.flag} resizeMode="contain" />
+              ) : (
+                <Text style={styles.flagPlaceholder}>🏳️</Text>
+              )}
+              <Text style={styles.teamCodeBig}>{match.away_team?.code}</Text>
+            </View>
+          </View>
+
+          {/* Tu Prediccion */}
+          <View style={styles.cardDivider} />
+          <View style={styles.predictionRow}>
+            <Text style={styles.sectionTitle}>TU PREDICCIÓN:</Text>
+            <Text style={styles.predValText}>
+              {myPred ? `${myPred.home_score_pred} - ${myPred.away_score_pred}` : '—'}
+            </Text>
+          </View>
+
+          {/* Picks del grupo */}
+          <View style={styles.cardDivider} />
+          <View style={styles.picksSection}>
+            <Text style={styles.sectionTitle}>PICKS DEL GRUPO</Text>
+            {otherMembers.length === 0 ? (
+              <Text style={styles.emptyTextSub}>No hay otros miembros en este grupo.</Text>
+            ) : (
+              otherMembers.map(member => {
+                const mPred = matchPreds.find(p => p.user_id === member.user_id);
+                const username = member.users?.username || 'Jugador';
+                return (
+                  <View key={member.user_id} style={styles.pickItem}>
+                    <Text style={styles.pickUser}>{username}</Text>
+                    <Text style={styles.pickArrow}>→</Text>
+                    <Text style={[styles.pickValue, !mPred && styles.noPredValue]}>
+                      {mPred ? `${mPred.home_score_pred} - ${mPred.away_score_pred}` : '—'}
+                    </Text>
+                  </View>
+                );
+              })
+            )}
+          </View>
+        </View>
+      );
+    }
+
+    // Expanded Mode: Por comenzar
+    if (!isLive && !isFinished) {
+      return (
+        <View key={match.id} style={[styles.upcomingCard, styles.expandedCard]}>
+          {/* Header */}
+          <View style={styles.cardHeader}>
+            <View style={styles.upcomingBadge}>
+              <Text style={styles.upcomingBadgeText}>⏳ POR COMENZAR</Text>
+            </View>
+            <Text style={styles.roundText}>
+              {match.round === 'group' ? `GRUPO ${match.group_name || ''}` : match.round.toUpperCase()}
+            </Text>
+          </View>
+
+          {/* Teams Header */}
+          <View style={styles.teamsHeaderRow}>
+            {homeFlag && <Image source={{ uri: homeFlag }} style={styles.miniFlag} resizeMode="contain" />}
+            <Text style={styles.upcomingTeamsText}>{match.home_team?.code} vs {match.away_team?.code}</Text>
+            {awayFlag && <Image source={{ uri: awayFlag }} style={styles.miniFlag} resizeMode="contain" />}
+          </View>
+
+          {/* Tu Prediccion */}
+          <View style={styles.cardDivider} />
+          <View style={styles.predictionRow}>
+            <Text style={styles.sectionTitle}>TU PREDICCIÓN:</Text>
+            <Text style={styles.predValText}>
+              {myPred ? `${myPred.home_score_pred} - ${myPred.away_score_pred}  🔒` : '—  🔒'}
+            </Text>
+          </View>
+
+          {/* Picks del grupo */}
+          <View style={styles.cardDivider} />
+          <View style={styles.picksSection}>
+            <Text style={styles.sectionTitle}>PICKS DEL GRUPO</Text>
+            {otherMembers.length === 0 ? (
+              <Text style={styles.emptyTextSub}>No hay otros miembros en este grupo.</Text>
+            ) : (
+              otherMembers.map(member => {
+                const mPred = matchPreds.find(p => p.user_id === member.user_id);
+                const username = member.users?.username || 'Jugador';
+                return (
+                  <View key={member.user_id} style={styles.pickItem}>
+                    <Text style={styles.pickUser}>{username}</Text>
+                    <Text style={styles.pickArrow}>→</Text>
+                    <Text style={[styles.pickValue, !mPred && styles.noPredValue]}>
+                      {mPred ? `${mPred.home_score_pred} - ${mPred.away_score_pred}` : '—'}
+                    </Text>
+                  </View>
+                );
+              })
+            )}
+          </View>
+        </View>
+      );
+    }
+
+    // Expanded Mode: Finalizado
+    if (isFinished) {
+      // Categorize predictions
+      const exactos = matchPreds.filter(p => p.points_earned === 3);
+      const ganadores = matchPreds.filter(p => p.points_earned === 1);
+      const perdidos = matchPreds.filter(p => p.points_earned === 0);
+
+      const renderUserList = (list: any[]) => {
+        if (list.length === 0) return '—';
+        return list.map(p => getUsername(p.user_id)).join(', ');
+      };
+
+      return (
+        <View key={match.id} style={[styles.finishedCard, styles.expandedCard]}>
+          {/* Header */}
+          <View style={styles.cardHeader}>
+            <View style={styles.finishedBadge}>
+              <Text style={styles.finishedBadgeText}>✅ FINALIZADO</Text>
+            </View>
+            <Text style={styles.roundText}>
+              {match.round === 'group' ? `GRUPO ${match.group_name || ''}` : match.round.toUpperCase()}
+            </Text>
+          </View>
+
+          {/* Score Header */}
+          <View style={styles.finishedTeamsRow}>
+            {homeFlag && <Image source={{ uri: homeFlag }} style={styles.miniFlag} resizeMode="contain" />}
+            <Text style={styles.finishedTeamCode}>{match.home_team?.code}</Text>
+            <Text style={styles.finishedScoreText}>{match.home_score ?? 0} - {match.away_score ?? 0}</Text>
+            <Text style={styles.finishedTeamCode}>{match.away_team?.code}</Text>
+            {awayFlag && <Image source={{ uri: awayFlag }} style={styles.miniFlag} resizeMode="contain" />}
+          </View>
+          
+          {(match.home_penalties !== null || match.away_penalties !== null) && (
+            <Text style={styles.finishedPenaltiesText}>
+              ({match.home_penalties ?? 0} - {match.away_penalties ?? 0} pen.)
+            </Text>
+          )}
+
+          {/* Stats Results */}
+          <View style={styles.cardDivider} />
+          <View style={styles.finishedStatsContainer}>
+            <View style={styles.statCategoryRow}>
+              <Text style={styles.statEmoji}>🎯</Text>
+              <Text style={styles.statNamesGreen}>{renderUserList(exactos)}</Text>
+            </View>
+            <View style={styles.statCategoryRow}>
+              <Text style={styles.statEmoji}>✅</Text>
+              <Text style={styles.statNamesBlue}>{renderUserList(ganadores)}</Text>
+            </View>
+            <View style={styles.statCategoryRow}>
+              <Text style={styles.statEmoji}>❌</Text>
+              <Text style={styles.statNamesRed}>{renderUserList(perdidos)}</Text>
+            </View>
+          </View>
+        </View>
+      );
+    }
+
+    return null;
   };
 
   if (loading) {
@@ -265,236 +497,6 @@ export default function EnVivoScreen() {
     );
   }
 
-  // Lógica de Renderizado
-  const renderFinishedMatch = (match: any) => {
-    const homeFlag = getFlagUrl(match.home_team?.code);
-    const awayFlag = getFlagUrl(match.away_team?.code);
-
-    // Filter predictions for this match
-    const preds = groupPredictions.filter(p => p.match_id === match.id);
-    
-    // Categorize
-    const exactos = preds.filter(p => p.points_earned === 3);
-    const ganadores = preds.filter(p => p.points_earned === 1);
-    const perdidos = preds.filter(p => p.points_earned === 0);
-
-    const renderUserList = (list: any[]) => {
-      if (list.length === 0) return '—';
-      return list.map(p => p.users?.username || 'Usuario').join(', ');
-    };
-
-    return (
-      <View key={match.id} style={styles.finishedMatchCard}>
-        {/* Match Header */}
-        <View style={styles.finishedMatchHeader}>
-          <View style={styles.finishedTeamsRow}>
-            {homeFlag && <Image source={{ uri: homeFlag }} style={styles.miniFlag} resizeMode="contain" />}
-            <Text style={styles.finishedTeamCode}>{match.home_team?.code}</Text>
-            <Text style={styles.finishedScoreText}>{match.home_score ?? 0} - {match.away_score ?? 0}</Text>
-            <Text style={styles.finishedTeamCode}>{match.away_team?.code}</Text>
-            {awayFlag && <Image source={{ uri: awayFlag }} style={styles.miniFlag} resizeMode="contain" />}
-          </View>
-          <View style={styles.miniFinishedBadge}>
-            <Text style={styles.miniFinishedBadgeText}>FINALIZADO</Text>
-          </View>
-        </View>
-
-        {/* Stats Row */}
-        <View style={styles.finishedStatsContainer}>
-          <View style={styles.statCategoryRow}>
-            <Text style={styles.statEmoji}>🎯</Text>
-            <Text style={styles.statNamesGreen}>{renderUserList(exactos)}</Text>
-          </View>
-          <View style={styles.statCategoryRow}>
-            <Text style={styles.statEmoji}>✅</Text>
-            <Text style={styles.statNamesBlue}>{renderUserList(ganadores)}</Text>
-          </View>
-          <View style={styles.statCategoryRow}>
-            <Text style={styles.statEmoji}>❌</Text>
-            <Text style={styles.statNamesRed}>{renderUserList(perdidos)}</Text>
-          </View>
-        </View>
-      </View>
-    );
-  };
-
-  const renderContent = () => {
-    const currentNowStr = now.toISOString();
-    
-    // Filter today's matches
-    const activeMatches = todayMatches.filter(m =>
-      m.kickoff_utc <= currentNowStr && !['FT', 'AET', 'PEN', 'finished'].includes(m.status)
-    );
-    const finishedMatches = todayMatches.filter(m =>
-      ['FT', 'AET', 'PEN', 'finished'].includes(m.status)
-    );
-    
-    const hasActive = activeMatches.length > 0;
-    const hasFinished = finishedMatches.length > 0;
-    const hasUpcoming = todayMatches.some(m => m.kickoff_utc > currentNowStr);
-
-    if (!hasActive && !hasFinished && !hasUpcoming) {
-      // Caso 3: Sin partidos hoy
-      return (
-        <ScrollView
-          contentContainerStyle={[styles.scroll, styles.centeredContent]}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00FF41" />}
-        >
-          <View style={styles.emptyContainer}>
-            <Ionicons name="calendar-outline" size={60} color="#b9ccb2" style={{ marginBottom: 16 }} />
-            <Text style={styles.emptyText}>No hay partidos hoy</Text>
-            <Text style={styles.emptySub}>Vuelve mañana para ver los partidos y predicciones en vivo.</Text>
-          </View>
-        </ScrollView>
-      );
-    }
-
-    return (
-      <ScrollView
-        contentContainerStyle={styles.scroll}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00FF41" />}
-      >
-        {/* ARRIBA: Partidos activos EN VIVO */}
-        {hasActive && (
-          <View style={styles.activeSection}>
-            {activeMatches.map(match => {
-              const homeFlag = getFlagUrl(match.home_team?.code);
-              const awayFlag = getFlagUrl(match.away_team?.code);
-              const myPred = groupPredictions.find(p => p.match_id === match.id && p.user_id === userId);
-              const otherMembers = groupMembers.filter(m => m.user_id !== userId);
-
-              return (
-                <View key={match.id} style={[styles.liveCard, { marginBottom: 16 }]}>
-                  {/* Header del card */}
-                  <View style={styles.cardHeader}>
-                    <Text style={styles.roundText}>
-                      {match.round === 'group' ? `GRUPO ${match.group_name || ''}` : match.round.toUpperCase()}
-                    </Text>
-                    <Text style={styles.separatorDot}>•</Text>
-                    <Text style={styles.metaText}>EN VIVO</Text>
-                  </View>
-
-                  {/* Scoreboard Principal */}
-                  <View style={styles.scoreboardRow}>
-                    <View style={styles.teamColumn}>
-                      {homeFlag ? (
-                        <Image source={{ uri: homeFlag }} style={styles.flag} resizeMode="contain" />
-                      ) : (
-                        <Text style={styles.flagPlaceholder}>🏳️</Text>
-                      )}
-                      <Text style={styles.teamName}>{match.home_team?.name}</Text>
-                      <Text style={styles.teamCode}>{match.home_team?.code}</Text>
-                    </View>
-
-                    <View style={styles.scoreColumn}>
-                      <View style={styles.scoreNumbers}>
-                        <Text style={styles.scoreText}>{match.home_score ?? 0}</Text>
-                        <Text style={styles.dash}>-</Text>
-                        <Text style={styles.scoreText}>{match.away_score ?? 0}</Text>
-                      </View>
-                      {(match.home_penalties !== null || match.away_penalties !== null) && (
-                        <Text style={styles.penaltiesText}>
-                          ({match.home_penalties ?? 0} - {match.away_penalties ?? 0} pen.)
-                        </Text>
-                      )}
-                    </View>
-
-                    <View style={styles.teamColumn}>
-                      {awayFlag ? (
-                        <Image source={{ uri: awayFlag }} style={styles.flag} resizeMode="contain" />
-                      ) : (
-                        <Text style={styles.flagPlaceholder}>🏳️</Text>
-                      )}
-                      <Text style={styles.teamName}>{match.away_team?.name}</Text>
-                      <Text style={styles.teamCode}>{match.away_team?.code}</Text>
-                    </View>
-                  </View>
-
-                  {/* Badge de Estado */}
-                  <View style={styles.badgeWrapper}>
-                    <View style={styles.liveBadgeContainer}>
-                      <Animated.View style={[styles.liveDot, { opacity: pulseAnim }]} />
-                      <Text style={styles.liveBadgeText}>EN VIVO</Text>
-                    </View>
-                  </View>
-
-                  {/* TU PREDICCIÓN */}
-                  <View style={styles.divider} />
-                  <View style={styles.myPredictionSection}>
-                    <Text style={styles.sectionTitle}>TU PREDICCIÓN</Text>
-                    {myPred ? (
-                      <View style={styles.myPredRow}>
-                        <Text style={styles.myPredText}>
-                          {match.home_team?.name}  {myPred.home_score_pred}  -  {myPred.away_score_pred}  {match.away_team?.name}
-                        </Text>
-                        {myPred.points_earned !== null && myPred.points_earned > 0 && (
-                          <Text style={styles.pointsBadge}>+{myPred.points_earned} PTS</Text>
-                        )}
-                      </View>
-                    ) : (
-                      <Text style={styles.noPredText}>Sin predicción</Text>
-                    )}
-                  </View>
-
-                  {/* PICKS DEL GRUPO */}
-                  <View style={styles.divider} />
-                  <View style={styles.groupPicksSection}>
-                    <Text style={styles.sectionTitle}>PICKS DEL GRUPO</Text>
-                    {otherMembers.length === 0 ? (
-                      <Text style={styles.emptyPicksText}>No hay otros miembros en este grupo.</Text>
-                    ) : (
-                      otherMembers.map(member => {
-                        const mPred = groupPredictions.find(p => p.match_id === match.id && p.user_id === member.user_id);
-                        const username = member.users?.username || 'Jugador';
-                        
-                        return (
-                          <View key={member.user_id} style={styles.memberPickRow}>
-                            <Text style={styles.memberName}>{username}</Text>
-                            <Ionicons name="arrow-forward-outline" size={14} color="#666" style={{ marginHorizontal: 8 }} />
-                            <Text style={[styles.memberScore, !mPred && styles.noMemberPred]}>
-                              {mPred ? `${mPred.home_score_pred} - ${mPred.away_score_pred}` : '—'}
-                            </Text>
-                          </View>
-                        );
-                      })
-                    )}
-                  </View>
-                </View>
-              );
-            })}
-          </View>
-        )}
-
-        {/* SI NO HAY PARTIDOS ACTIVOS: Mostramos el contador del próximo partido de hoy */}
-        {!hasActive && nextMatch && (
-          <View style={styles.countdownCard}>
-            <Ionicons name="hourglass-outline" size={54} color="#00FF41" style={{ marginBottom: 12 }} />
-            <Text style={styles.countdownTitle}>PRÓXIMO PARTIDO HOY</Text>
-            
-            <View style={styles.nextMatchTeamsRow}>
-              <Text style={styles.nextMatchTeamCode}>{nextMatch.home_team?.code}</Text>
-              <Text style={styles.nextMatchVs}>vs</Text>
-              <Text style={styles.nextMatchTeamCode}>{nextMatch.away_team?.code}</Text>
-            </View>
-
-            <Text style={styles.countdownTime}>{countdownStr}</Text>
-            <Text style={styles.countdownSub}>
-              El partido inicia a las {new Date(nextMatch.kickoff_utc).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (Hora Local)
-            </Text>
-          </View>
-        )}
-
-        {/* ABAJO: Lista de partidos finalizados del día */}
-        {hasFinished && (
-          <View style={styles.finishedSection}>
-            <Text style={styles.finishedHeaderTitle}>PARTIDOS DE HOY</Text>
-            {finishedMatches.map(renderFinishedMatch)}
-          </View>
-        )}
-      </ScrollView>
-    );
-  };
-
   return (
     <View style={styles.container}>
       {/* Header */}
@@ -508,7 +510,20 @@ export default function EnVivoScreen() {
         )}
       </View>
 
-      {renderContent()}
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00FF41" />}
+      >
+        {todayMatches.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <Ionicons name="calendar-outline" size={60} color="#b9ccb2" style={{ marginBottom: 16 }} />
+            <Text style={styles.emptyTitleText}>No hay partidos hoy</Text>
+            <Text style={styles.emptySubText}>Vuelve mañana para ver los partidos y predicciones en vivo.</Text>
+          </View>
+        ) : (
+          todayMatches.map(renderMatchCard)
+        )}
+      </ScrollView>
     </View>
   );
 }
@@ -517,7 +532,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#131313',
-    paddingTop: 60,
+    paddingTop: Platform.OS === 'ios' ? 60 : 20,
   },
   centered: {
     justifyContent: 'center',
@@ -525,11 +540,7 @@ const styles = StyleSheet.create({
   },
   scroll: {
     padding: 16,
-    paddingBottom: 40,
-  },
-  centeredContent: {
-    flexGrow: 1,
-    justifyContent: 'center',
+    paddingBottom: 60,
   },
   header: {
     flexDirection: 'row',
@@ -585,99 +596,83 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
 
-  // Card Partido Activo
-  liveCard: {
+  // Collapsed Mode Card
+  collapsedCard: {
+    backgroundColor: '#201f1f',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#3b4b37',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  collapsedTime: {
+    color: '#b9ccb2',
+    fontSize: 13,
+    fontWeight: '700',
+    width: 70,
+  },
+  collapsedTeamsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  collapsedTeamCode: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  collapsedVs: {
+    color: '#666',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  collapsedCountdown: {
+    color: '#ffb4ab',
+    fontSize: 13,
+    fontWeight: '700',
+    width: 80,
+    textAlign: 'right',
+  },
+
+  // Expanded Mode Card
+  expandedCard: {
     backgroundColor: '#201f1f',
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#3b4b37',
     paddingVertical: 20,
     paddingHorizontal: 16,
+    marginBottom: 14,
   },
   cardHeader: {
     flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  roundText: {
-    color: '#b9ccb2',
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 1,
-  },
-  separatorDot: {
-    color: '#666',
-    marginHorizontal: 8,
-  },
-  metaText: {
-    color: '#b9ccb2',
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 1,
-  },
-  scoreboardRow: {
-    flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 16,
   },
-  teamColumn: {
-    alignItems: 'center',
-    flex: 1.2,
-  },
-  flag: {
-    width: 60,
-    height: 40,
-    borderRadius: 4,
-    marginBottom: 8,
-  },
-  flagPlaceholder: {
-    fontSize: 36,
-    marginBottom: 8,
-  },
-  teamName: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '700',
-    textAlign: 'center',
-    marginBottom: 2,
-  },
-  teamCode: {
+  roundText: {
     color: '#666',
     fontSize: 11,
     fontWeight: '800',
+    letterSpacing: 1,
   },
-  scoreColumn: {
-    alignItems: 'center',
-    flex: 1,
+  cardDivider: {
+    height: 1,
+    backgroundColor: '#3b4b37',
+    marginVertical: 14,
   },
-  scoreNumbers: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+
+  // Live Card specific
+  liveCard: {
+    borderColor: '#ff4b4b',
   },
-  scoreText: {
-    color: '#fff',
-    fontSize: 42,
-    fontWeight: '900',
-  },
-  dash: {
-    color: '#666',
-    fontSize: 24,
-    fontWeight: '300',
-  },
-  penaltiesText: {
-    color: '#666',
-    fontSize: 12,
-    fontStyle: 'italic',
-    marginTop: 4,
-  },
-  badgeWrapper: {
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  liveBadgeContainer: {
+  liveBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(255, 75, 75, 0.1)',
@@ -700,230 +695,189 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 1,
   },
-  finishedBadgeContainer: {
-    backgroundColor: '#393939',
+  scoreboardRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginVertical: 10,
+  },
+  teamColumn: {
+    alignItems: 'center',
+    flex: 1.2,
+  },
+  flag: {
+    width: 50,
+    height: 34,
+    borderRadius: 3,
+    marginBottom: 6,
+  },
+  flagPlaceholder: {
+    fontSize: 28,
+    marginBottom: 6,
+  },
+  teamCodeBig: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  scoreColumn: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  scoreNumbers: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  scoreText: {
+    color: '#fff',
+    fontSize: 36,
+    fontWeight: '900',
+  },
+  dash: {
+    color: '#666',
+    fontSize: 20,
+    fontWeight: '300',
+  },
+  penaltiesText: {
+    color: '#666',
+    fontSize: 11,
+    fontStyle: 'italic',
+    marginTop: 2,
+  },
+
+  // Upcoming Card specific
+  upcomingCard: {},
+  upcomingBadge: {
+    backgroundColor: 'rgba(255, 184, 0, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 184, 0, 0.3)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+  },
+  upcomingBadgeText: {
+    color: '#FFB800',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  teamsHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    marginVertical: 10,
+  },
+  upcomingTeamsText: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+
+  // Finished Card specific
+  finishedCard: {},
+  finishedBadge: {
+    backgroundColor: 'rgba(0, 255, 65, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 255, 65, 0.3)',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 4,
   },
   finishedBadgeText: {
-    color: '#b9ccb2',
+    color: '#00FF41',
     fontSize: 10,
     fontWeight: '900',
     letterSpacing: 1,
   },
-  divider: {
-    height: 1,
-    backgroundColor: '#3b4b37',
-    marginVertical: 18,
+  finishedTeamsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    marginVertical: 10,
+  },
+  finishedTeamCode: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  finishedScoreText: {
+    color: '#00FF41',
+    fontSize: 22,
+    fontWeight: '900',
+    marginHorizontal: 8,
+  },
+  finishedPenaltiesText: {
+    color: '#666',
+    fontSize: 11,
+    textAlign: 'center',
+    marginTop: -4,
+    marginBottom: 8,
   },
 
-  // Tu predicción
-  myPredictionSection: {
-    paddingHorizontal: 4,
-  },
-  sectionTitle: {
-    color: '#00FF41',
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 1.2,
-    marginBottom: 12,
-  },
-  myPredRow: {
+  // Shared Subsections inside expanded cards
+  predictionRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#131313',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: '#3b4b37',
-  },
-  myPredText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  pointsBadge: {
-    color: '#000',
-    backgroundColor: '#00FF41',
-    fontSize: 10,
-    fontWeight: '900',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 2,
-  },
-  noPredText: {
-    color: '#666',
-    fontSize: 14,
-    fontStyle: 'italic',
-  },
-
-  // Picks del grupo
-  groupPicksSection: {
     paddingHorizontal: 4,
   },
-  emptyPicksText: {
+  sectionTitle: {
     color: '#666',
-    fontSize: 13,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
   },
-  memberPickRow: {
+  predValText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  picksSection: {
+    paddingHorizontal: 4,
+  },
+  emptyTextSub: {
+    color: '#666',
+    fontSize: 12,
+    fontStyle: 'italic',
+    marginTop: 8,
+  },
+  pickItem: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#2a2a2a',
+    borderBottomColor: '#252525',
   },
-  memberName: {
-    color: '#fff',
-    fontSize: 14,
+  pickUser: {
+    color: '#b9ccb2',
+    fontSize: 13,
     fontWeight: '600',
     flex: 1,
   },
-  memberScore: {
+  pickArrow: {
+    color: '#666',
+    marginHorizontal: 8,
+  },
+  pickValue: {
     color: '#00FF41',
-    fontSize: 14,
-    fontWeight: '800',
+    fontSize: 13,
+    fontWeight: '700',
     width: 60,
     textAlign: 'right',
   },
-  noMemberPred: {
+  noPredValue: {
     color: '#666',
   },
 
-  // Countdown Card
-  countdownCard: {
-    backgroundColor: '#201f1f',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#3b4b37',
-    padding: 24,
-    alignItems: 'center',
-    marginHorizontal: 4,
-  },
-  countdownTitle: {
-    color: '#b9ccb2',
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 1.5,
-    marginBottom: 20,
-  },
-  nextMatchTeamsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-    marginBottom: 20,
-  },
-  nextMatchTeamCode: {
-    color: '#fff',
-    fontSize: 28,
-    fontWeight: '900',
-  },
-  nextMatchVs: {
-    color: '#666',
-    fontSize: 16,
-    fontWeight: '400',
-  },
-  countdownTime: {
-    color: '#00FF41',
-    fontSize: 48,
-    fontWeight: '900',
-    letterSpacing: 2,
-    marginBottom: 16,
-  },
-  countdownSub: {
-    color: '#666',
-    fontSize: 12,
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-
-  // Empty state
-  emptyContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 40,
-  },
-  emptyText: {
-    color: '#fff',
-    fontSize: 20,
-    fontWeight: '800',
-    marginBottom: 8,
-  },
-  emptySub: {
-    color: '#b9ccb2',
-    fontSize: 14,
-    textAlign: 'center',
-    paddingHorizontal: 30,
-    lineHeight: 20,
-  },
-  activeSection: {
-    marginBottom: 16,
-  },
-  finishedSection: {
-    marginTop: 24,
-  },
-  finishedHeaderTitle: {
-    color: '#00FF41',
-    fontSize: 14,
-    fontWeight: '800',
-    letterSpacing: 1.5,
-    marginBottom: 16,
-    textTransform: 'uppercase',
-  },
-  finishedMatchCard: {
-    backgroundColor: '#201f1f',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#3b4b37',
-    padding: 16,
-    marginBottom: 12,
-  },
-  finishedMatchHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#2a2a2a',
-    paddingBottom: 8,
-  },
-  finishedTeamsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  miniFlag: {
-    width: 24,
-    height: 16,
-    borderRadius: 2,
-  },
-  finishedTeamCode: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  finishedScoreText: {
-    color: '#00FF41',
-    fontSize: 16,
-    fontWeight: '900',
-    marginHorizontal: 4,
-  },
-  miniFinishedBadge: {
-    backgroundColor: '#393939',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 3,
-  },
-  miniFinishedBadgeText: {
-    color: '#b9ccb2',
-    fontSize: 9,
-    fontWeight: '800',
-  },
+  // Finished stats rows
   finishedStatsContainer: {
-    gap: 6,
+    gap: 8,
+    paddingHorizontal: 4,
   },
   statCategoryRow: {
     flexDirection: 'row',
@@ -952,5 +906,30 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     flex: 1,
+  },
+
+  // General empty state
+  emptyContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+  },
+  emptyTitleText: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: '800',
+    marginBottom: 8,
+  },
+  emptySubText: {
+    color: '#b9ccb2',
+    fontSize: 14,
+    textAlign: 'center',
+    paddingHorizontal: 30,
+    lineHeight: 20,
+  },
+  miniFlag: {
+    width: 20,
+    height: 14,
+    borderRadius: 2,
   },
 });
