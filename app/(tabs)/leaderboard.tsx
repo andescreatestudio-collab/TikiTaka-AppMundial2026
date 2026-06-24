@@ -17,8 +17,9 @@ import { supabase } from '../../src/lib/supabase';
 interface LeaderboardRow {
   user_id: string;
   total_points: number;
-  exact_scores: number;
-  correct_winners: number;
+  exactos: number;
+  ganadores: number;
+  perdidos: number;
   username: string;
 }
 
@@ -84,7 +85,7 @@ export default function LeaderboardScreen() {
       // 3. Obtener los puntajes reales de leaderboard
       const { data: lbData, error: lbError } = await supabase
         .from('leaderboard')
-        .select('user_id, total_points, exact_scores, correct_winners')
+        .select('user_id, total_points')
         .eq('group_id', groupId);
       
       if (lbError) throw lbError;
@@ -96,20 +97,50 @@ export default function LeaderboardScreen() {
         });
       }
 
-      // 4. Mezclar los datos de miembros con los de leaderboard
+      // 4. Obtener todas las predicciones del grupo procesadas para calcular estadísticas
+      const { data: predsData, error: predsError } = await supabase
+        .from('predictions')
+        .select('user_id, points_earned')
+        .eq('group_id', groupId)
+        .not('points_earned', 'is', null);
+
+      if (predsError) throw predsError;
+
+      const statsMap = new Map<string, { exactos: number; ganadores: number; perdidos: number }>();
+      (members || []).forEach((m: any) => {
+        statsMap.set(m.user_id, { exactos: 0, ganadores: 0, perdidos: 0 });
+      });
+
+      if (predsData) {
+        predsData.forEach((p: any) => {
+          const userStats = statsMap.get(p.user_id) || { exactos: 0, ganadores: 0, perdidos: 0 };
+          if (p.points_earned === 3) {
+            userStats.exactos++;
+          } else if (p.points_earned === 1) {
+            userStats.ganadores++;
+          } else if (p.points_earned === 0) {
+            userStats.perdidos++;
+          }
+          statsMap.set(p.user_id, userStats);
+        });
+      }
+
+      // 5. Mezclar los datos de miembros con los de leaderboard y estadísticas
       const rows = (members || []).map((m: any) => {
         const scoreInfo = lbMap.get(m.user_id);
+        const userStats = statsMap.get(m.user_id) || { exactos: 0, ganadores: 0, perdidos: 0 };
         const username = m.users?.username || 'Usuario';
         return {
           user_id: m.user_id,
           total_points: scoreInfo?.total_points ?? 0,
-          exact_scores: scoreInfo?.exact_scores ?? 0,
-          correct_winners: scoreInfo?.correct_winners ?? 0,
+          exactos: userStats.exactos,
+          ganadores: userStats.ganadores,
+          perdidos: userStats.perdidos,
           username,
         };
       });
 
-      // 5. Ordenar por puntaje descendente
+      // 6. Ordenar por puntaje descendente
       rows.sort((a, b) => b.total_points - a.total_points);
 
       setLeaderboard(rows);
@@ -143,24 +174,27 @@ export default function LeaderboardScreen() {
     const isMe = item.user_id === userId;
     const isTopThree = index < 3;
     const rankColor = isTopThree ? '#00FF41' : '#b9ccb2';
+    const rankDisplay = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}`;
 
     return (
       <View style={[styles.row, isMe && styles.myRow]}>
-        <Text style={[styles.rank, { color: rankColor }]}>{index + 1}</Text>
+        <Text style={[styles.rank, { color: rankColor }]}>{rankDisplay}</Text>
         
         <View style={[styles.avatar, isMe && styles.myAvatar]}>
           <Text style={[styles.avatarText, isMe && styles.myAvatarText]}>{getInitials(item.username)}</Text>
         </View>
 
-        <Text style={[styles.username, isMe && styles.myText]} numberOfLines={1}>
-          {item.username} {isMe ? ' (tú)' : ''}
-        </Text>
+        <View style={styles.userInfoCol}>
+          <Text style={[styles.username, isMe && styles.myText]} numberOfLines={1}>
+            {item.username} {isMe ? ' (tú)' : ''}
+          </Text>
+          <Text style={styles.statsSubRow}>
+            🎯 Exactos: {item.exactos}  ✅ Ganadores: {item.ganadores}  ❌ Perdidos: {item.perdidos}
+          </Text>
+        </View>
 
         <View style={styles.pointsCol}>
           <Text style={styles.points}>{item.total_points} pts</Text>
-          <Text style={styles.statsSub}>
-            {item.exact_scores} exactos • {item.correct_winners} ganadores
-          </Text>
         </View>
       </View>
     );
@@ -318,15 +352,20 @@ const styles: any = StyleSheet.create({
     color: '#fff',
     fontSize: 15,
     fontWeight: '600',
-    flex: 1,
+    marginBottom: 2,
   },
   myText: {
     color: '#fff',
     fontWeight: '800',
   },
+  userInfoCol: {
+    flex: 1,
+    justifyContent: 'center',
+  },
   pointsCol: {
     alignItems: 'flex-end',
     justifyContent: 'center',
+    marginLeft: 8,
   },
   points: {
     color: '#00FF41',
@@ -334,11 +373,10 @@ const styles: any = StyleSheet.create({
     fontWeight: '900',
     textAlign: 'right',
   },
-  statsSub: {
-    color: '#666',
-    fontSize: 9,
-    marginTop: 2,
-    textAlign: 'right',
+  statsSubRow: {
+    color: '#b9ccb2',
+    fontSize: 10,
+    fontWeight: '500',
   },
 
   // Empty state in list
