@@ -35,39 +35,59 @@ export default function PuntuacionScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [selectingKey, setSelectingKey] = useState<string | null>(null);
 
-  const updateCountdown = useCallback(() => {
+  // Effect 1: Fetch picks deadline from app_config once on mount
+  useEffect(() => {
+    const fetchDeadline = async () => {
+      try {
+        const { data } = await supabase
+          .from('app_config')
+          .select('value')
+          .eq('key', 'picks_deadline')
+          .single();
+
+        setDeadline(data?.value ? new Date(data.value) : new Date('2026-06-11T19:00:00Z'));
+      } catch (error) {
+        console.error('Error fetching deadline:', error);
+        setDeadline(new Date('2026-06-11T19:00:00Z'));
+      }
+    };
+    fetchDeadline();
+  }, []);
+
+  // Effect 2: Run countdown timer depending only on deadline
+  useEffect(() => {
     if (!deadline) {
       setIsLocked(true);
       return;
     }
-    const now = new Date();
-    const diff = deadline.getTime() - now.getTime();
-    
-    if (diff <= 0) {
-      setTimeLeft('CERRADO');
-      setIsLocked(true);
-    } else {
-      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-      const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-      const pad = (num: number) => num.toString().padStart(2, '0');
-      setTimeLeft(`${days}d ${pad(hours)}h ${pad(minutes)}m ${pad(seconds)}s`);
-      setIsLocked(false);
-    }
+
+    const updateCountdown = () => {
+      const now = new Date();
+      const diff = deadline.getTime() - now.getTime();
+      
+      if (diff <= 0) {
+        setTimeLeft('CERRADO');
+        setIsLocked(true);
+      } else {
+        const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+        const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+        const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+        const pad = (num: number) => num.toString().padStart(2, '0');
+        setTimeLeft(`${days}d ${pad(hours)}h ${pad(minutes)}m ${pad(seconds)}s`);
+        setIsLocked(false);
+      }
+    };
+
+    updateCountdown();
+    const timer = setInterval(updateCountdown, 1000);
+    return () => clearInterval(timer);
   }, [deadline]);
 
+  // Effect 3: Fetch main data once on mount
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-
-      const { data: deadlineData } = await supabase
-        .from('app_config')
-        .select('value')
-        .eq('key', 'picks_deadline')
-        .single();
-
-      setDeadline(deadlineData?.value ? new Date(deadlineData.value) : new Date('2026-06-11T19:00:00Z'));
 
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
@@ -119,9 +139,7 @@ export default function PuntuacionScreen() {
 
   useEffect(() => {
     fetchData();
-    const timer = setInterval(updateCountdown, 1000);
-    return () => clearInterval(timer);
-  }, [fetchData, updateCountdown]);
+  }, [fetchData]);
 
   const handleSavePicks = async () => {
     if (isLocked) {
