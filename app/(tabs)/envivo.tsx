@@ -166,7 +166,7 @@ export default function EnVivoScreen() {
       const { data: matches, error: matchesError } = await supabase
         .from('matches')
         .select(`
-          id, kickoff_utc, status, round, group_name,
+          id, kickoff_utc, status, elapsed, round, group_name,
           home_score, away_score, home_penalties, away_penalties,
           home_team:teams!home_team_id(id, name, code),
           away_team:teams!away_team_id(id, name, code)
@@ -316,6 +316,14 @@ export default function EnVivoScreen() {
               <Text style={styles.teamCodeBig}>{match.away_team?.code}</Text>
             </View>
           </View>
+
+          {match.elapsed !== null && match.elapsed !== undefined && (
+            <View style={styles.elapsedContainer}>
+              <Text style={styles.elapsedText}>
+                ⏱ {match.status === 'HT' ? 'HT' : `${match.elapsed}'`}
+              </Text>
+            </View>
+          )}
 
           {/* Tu Prediccion */}
           <View style={styles.cardDivider} />
@@ -933,5 +941,16 @@ const styles = StyleSheet.create({
     width: 20,
     height: 14,
     borderRadius: 2,
+  },
+  elapsedContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+    marginBottom: 10,
+  },
+  elapsedText: {
+    color: '#00FF41',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });
