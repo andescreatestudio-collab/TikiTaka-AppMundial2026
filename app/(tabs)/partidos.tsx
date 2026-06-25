@@ -233,7 +233,8 @@ export default function PartidosScreen() {
     const kickoffTime = new Date(match.kickoff_utc).getTime();
     const nowTime = now.getTime();
 
-    if (match.status === 'finished') {
+    const isFinished = ['FT', 'AET', 'PEN', 'finished'].includes(match.status);
+    if (isFinished) {
       return (
         <View style={styles.ftBadge}>
           <Ionicons name="checkmark-circle" size={12} color="#00FF41" />
@@ -354,7 +355,7 @@ export default function PartidosScreen() {
                       {renderStatusBadge(match)}
                     </View>
 
-                    {match.status === 'finished' && (
+                    {['FT', 'AET', 'PEN', 'finished'].includes(match.status) && (
                       <View style={styles.finalScoreRow}>
                         <Text style={styles.finalScoreText}>
                           {match.home_team?.code} {match.home_score} {match.home_penalties !== null ? `(${match.home_penalties}) ` : ''}vs {match.away_penalties !== null ? `(${match.away_penalties}) ` : ''}{match.away_score} {match.away_team?.code}
